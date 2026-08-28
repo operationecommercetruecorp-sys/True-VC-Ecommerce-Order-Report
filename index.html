@@ -8,6 +8,22 @@
   #loading { text-align: center; } #loading h2 { color: #1A1A1A; font-weight: 800; margin-bottom: 6px; }
   #errbox { display:none; } #errbox h2 { color: #DC2626; }
   #errbox pre { background:#FEF2F2; border:1px solid #FECACA; color:#991B1B; padding:14px; border-radius:8px; overflow:auto; white-space:pre-wrap; font-size:12px; }
+
+  /* ===== Mobile layout ===== — grid rows below use fixed/mixed minmax() column
+     widths that look best on desktop, but a hard-coded min (e.g. 420px) forces
+     horizontal scrolling once the viewport itself is narrower than that. These
+     rules force a single column on small screens; !important is required since
+     the base widths are set as inline styles for the desktop layout. */
+  @media (max-width: 900px) {
+    .grid-2col-mixed, .grid-3col-mixed { grid-template-columns: 1fr !important; }
+  }
+  @media (max-width: 640px) {
+    .grid-autocards { grid-template-columns: 1fr !important; }
+    .grid-kpi { grid-template-columns: repeat(2, 1fr) !important; }
+  }
+  @media (max-width: 420px) {
+    .grid-kpi { grid-template-columns: 1fr !important; }
+  }
 </style>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -94,11 +110,18 @@ function brandKey(raw) {
   return normalizeBrand(raw).toUpperCase();
 }
 
-// A row is "accessories" (its own tab, excluded from Device/IOT) when Product Cat
-// or Product Sub Cat mentions accessories or charging cables.
+// A row is "accessories" (its own tab, excluded from Device/IOT) when either:
+//   1. Product Cat or Product Sub Cat mentions accessories or charging cables, OR
+//   2. It's a product-bearing row (has a Product Name) with no Brand Name — real
+//      devices always carry a brand, so a product with no brand is treated as an
+//      accessory instead. SIM-only/plan rows (no Product Name at all) are
+//      untouched by this rule, since they never carry a brand either.
 function isAccessoryRow(r) {
-  const s = `${r.pc || ""} ${r.psc || ""}`.toLowerCase();
-  return s.includes("accessor") || s.includes("charging cable");
+  const cat = `${r.pc || ""} ${r.psc || ""}`.toLowerCase();
+  if (cat.includes("accessor") || cat.includes("charging cable")) return true;
+  const hasProduct = r.pn && r.pn !== "-";
+  const hasBrand = r.br && r.br !== "-";
+  return !!(hasProduct && !hasBrand);
 }
 
 function cleanRows(rawRows) {
@@ -181,6 +204,8 @@ function orderTypeColors(names) {
   });
 }
 
+const TRUE_LOGO_DATA_URI = "data:image/png;base64,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";
+
 /* ============================ Brand icons & colors ============================
    Curated map for common device/accessory brands: official brand color + a
    Simple Icons (https://simpleicons.org) slug. Icons are fetched live from
@@ -208,6 +233,7 @@ const BRAND_META = {
   ANKER:     { color: "#000000", slug: "anker" },
   BASEUS:    { color: "#E60012", slug: null },
   UGREEN:    { color: "#0FA968", slug: null },
+  TRUE:      { color: "#E2231A", img: TRUE_LOGO_DATA_URI }, // provided logo, embedded (not fetched from a CDN)
 };
 // Deterministic (not random) fallback color so an uncurated brand always
 // renders the same color across reloads.
@@ -222,12 +248,13 @@ function brandMeta(name) {
 }
 function BrandBadge({ name, size = 18 }) {
   const meta = brandMeta(name);
-  const [imgOk, setImgOk] = useState(!!meta.slug);
+  const [imgOk, setImgOk] = useState(!!(meta.img || meta.slug));
   const hex = (typeof meta.color === "string" && meta.color.startsWith("#")) ? meta.color.slice(1) : null;
-  return meta.slug && imgOk && hex ? (
+  const src = meta.img || (meta.slug && hex ? `https://cdn.simpleicons.org/${meta.slug}/${hex}` : null);
+  return src && imgOk ? (
     <img
-      src={`https://cdn.simpleicons.org/${meta.slug}/${hex}`}
-      width={size} height={size} alt="" style={{ display: "block", flex: "none" }}
+      src={src}
+      width={size} height={size} alt="" style={{ display: "block", flex: "none", objectFit: "contain" }}
       onError={() => setImgOk(false)}
     />
   ) : (
@@ -330,7 +357,7 @@ function Card({ title, right, children, style }) {
       background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14,
       padding: "16px 18px", display: "flex", flexDirection: "column", minWidth: 0, ...style,
     }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8 }}>
         <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.ink, letterSpacing: "-0.01em" }}>{title}</h3>
         {right}
       </div>
@@ -1470,7 +1497,7 @@ function Dashboard() {
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: 16, marginBottom: 16 }}>
           <div>
             <div style={{ fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: C.sub, fontWeight: 600 }}>VC · Ecommerce</div>
-            <h1 style={{ margin: "2px 0 0", fontSize: 26, fontWeight: 800, letterSpacing: "-0.02em" }}>VC - Ecommerce Sales & Fulfillment Dashboard</h1>
+            <h1 style={{ margin: "2px 0 0", fontSize: "clamp(19px, 5.5vw, 26px)", fontWeight: 800, letterSpacing: "-0.02em" }}>VC - Ecommerce Sales & Fulfillment Dashboard</h1>
             {updated && <div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>Updated: <span style={{ color: C.ink, fontWeight: 600 }}>{updated}</span></div>}
           </div>
           {/* Filters top-right */}
@@ -1606,7 +1633,7 @@ function Dashboard() {
         {/* ===== end frozen section ===== */}
 
         {/* KPI strip */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 16, marginTop: 16 }}>
+        <div className="grid-kpi" style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12, marginBottom: 16, marginTop: 16 }}>
           <Kpi label="Orders" value={fmt(kpiOrders)} active={metric === "orders"} sub={`Avg ${fmtMoney(kpiOrders ? kpiGross / kpiOrders : 0)} / order`} />
           <Kpi label="Units Sold" value={fmt(kpiUnits)} active={metric === "units"} sub={`Avg ${fmtMoney(kpiUnits ? kpiGross / kpiUnits : 0)} / item`} />
           <Kpi label="Gross Selling" value={fmtMoney(kpiGross)} active={metric === "gross"} />
@@ -1620,7 +1647,7 @@ function Dashboard() {
         </div>
 
         {/* Row 2 */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16, marginBottom: 16 }}>
+        <div className="grid-autocards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16, marginBottom: 16 }}>
           <Card title="Order Type">{(() => { const d = countBy(filtered, "ot"); return <Donut data={d} colors={orderTypeColors(d.map(x => x.name))} />; })()}</Card>
           <Card title="Order Status">{(() => { const d = countBy(filtered, "os"); return <Donut data={d} colors={statusColors(d.map(x => x.name))} />; })()}</Card>
           <Card title="Order Workflow Status">{(() => { const d = countBy(filtered, "ows"); return <Donut data={d} colors={statusColors(d.map(x => x.name))} />; })()}</Card>
@@ -1637,7 +1664,7 @@ function Dashboard() {
         </div>
 
         {/* Row 4b — Delivery speed: avg days to customer (donut) + trend (stacked bar) */}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(300px,1fr) minmax(420px,1.5fr)", gap: 16, marginBottom: 16, alignItems: "start" }}>
+        <div className="grid-2col-mixed" style={{ display: "grid", gridTemplateColumns: "minmax(300px,1fr) minmax(420px,1.5fr)", gap: 16, marginBottom: 16, alignItems: "start" }}>
           <Card title="Average Day to Customer"
             right={<ZoneToggle zoneSet={tdcZones} setZoneSet={setTdcZones} />}>
             <W_AvgDayToCustomer rows={tdcRows} />
@@ -1648,26 +1675,26 @@ function Dashboard() {
         </div>
 
         {/* Row 5 — SKU (left) · Location (middle) · Pickup (right) */}
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(280px,1fr) minmax(380px,1.6fr) minmax(280px,1fr)", gap: 16, marginBottom: 16, alignItems: "start" }}>
+        <div className="grid-3col-mixed" style={{ display: "grid", gridTemplateColumns: "minmax(280px,1fr) minmax(380px,1.6fr) minmax(280px,1fr)", gap: 16, marginBottom: 16, alignItems: "start" }}>
           <Card title="Top Selling SKU"><TopTable rows={filtered} groupKey="pn" nameLabel="Product Name" codeKey="mc" /></Card>
           <Card title="Top Selling Location"><W7Heatmap rows={filtered} coords={COORDS} /></Card>
           <Card title="Top Pick-up at Shop"><TopTable rows={pickupRows} groupKey="shop" nameLabel="Delivery Shop Name" /></Card>
         </div>
 
         {/* Row 6 — Payment not process (bar) + by product (table) */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
+        <div className="grid-autocards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
           <Card title="Payment Not Process"><PeriodBar rows={notProcessedRows} denomRows={baseRows} color={C.orange} label="orders not processed" metric={metric} /></Card>
           <Card title="Payment Not Process by Product"><ProductUnitsTable rows={notProcessedRows} /></Card>
         </div>
 
         {/* Row 7 — Cancelled after payment (bar) + cancelled reason (donut) */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
+        <div className="grid-autocards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
           <Card title="Cancelled Order after Payment"><PeriodBar rows={paidCancelledRows} denomRows={paidRows} color={C.red} label="cancelled after payment" metric={metric} /></Card>
           <Card title="Cancelled Reason"><CancelReasonDonut rows={paidCancelledRows} /></Card>
         </div>
 
         {/* Row 8 — Most popular RC (table) + Upsize package (donut) */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
+        <div className="grid-autocards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(360px,1fr))", gap: 16, marginBottom: 16, alignItems: "start" }}>
           <Card title="Most Popular RC"><MostPopularRC rows={baseRows} /></Card>
           <Card title="Upsize Package"><UpsizePackage rows={baseRows} /></Card>
         </div>
