@@ -35,7 +35,11 @@ try {
   const COORDS = window.COORDS;
   const RAW = window.RAW;
 
-const TEMPLATE_HEADERS = ["No.","Order Create Date","Order ID","Order operator","Order Type","Order Status","Order Workflow Status","Order Cancelled reason","Order Note","Order Fulfillment Success/Failed reason","Quantity Cart","Order IP Address","Google ID","Product ID","Product Type SAP","Product Type","Product Cat","Product Sub Cat","Brand Name","Release Start Date","Release End Date","Product Name","Product Full Name","Material Code","IMEI","Product Color","Product Capacity","Product Variant1","Product Variant2","Product Variant3","Product Variant4","Product Variant5","Product RRP","quantity","Matcode SIM","SIM Source Type","SIM Company","SIM Serial","Item Status","item_discount","item_total_amount","total discount (order)","Current Operator","Current MNP Operator","MNP PIN Code","Certificate Type","Date of Birth of Iden","Current Package Code","Current Package RC","Current Aging","New Package Code","New Package RC","New Proposition Code","New Proposition Name","New Nas Code","Contract Penalty Fee","Contract Term","Advance payment fee","Extra advance payment fee","Billing Full Address","Billing Address House No","Billing Address Moo","Billing Address Village","Billing Address Building","Billing Address Floor","Billing Address Room No.","Billing Address Soi","Billing Address Road","Billing Address District","Billing Address Sub-District","Billing Address Province","Billing Address Zip code","Payment - Method","Payment - Installment Promotion","Pay next extra promo code","Pay next extra name","Payment - Bank Name","Payment - Account Number","Payment - IP Address","Payment Date","Payment Status","Payment Fail Description","Payment Fail Description Final","Total Payment","Tax amount","Privilege Code","Privilege Name","Campaign code","Coupon Code 1","Coupon Value 1","Coupon TSM Type 1","Coupon TSM Code 1","Coupon Code 2","Coupon Value 2","Coupon TSM Type 2","Coupon TSM Code 2","Coupon Code 3","Coupon Value 3","Coupon TSM Type 3","Coupon TSM Code 3","Coupon Code 4","Coupon Value 4","Coupon TSM Type 4","Coupon TSM Code 4","Delivery Type","Delivery Shop Name","Delivery Shop Code","Shipping Logistic Name","Shipping Tracking Number","Shipping Status","Shipping Full Address","Shipping Address House No","Shipping Address Moo","Shipping Address Village","Shipping Address Building","Shipping Address Floor","Shipping Address Room No.","Shipping Address Soi","Shipping Address Road","Shipping Address District","Shipping Address Sub-District","Shipping Address Province","Shipping Address Zip code","Receipt Identification Type","Receipt Branch","Receipt Type","Receipt Full Address","Receipt Address House No","Receipt Address Moo","Receipt Address Village","Receipt Address Building","Receipt Address Floor","Receipt Address Room No.","Receipt Address Soi","Receipt Address Road","Receipt Address District","Receipt Address Sub-District","Receipt Address Province","Receipt Address Zip code","UTM Source","UTM Medium","UTM Campaign","UTM Content","Campaign (UTM)","Slug ID","eKYC result status","DOPA status on UpPass","Certification type on UpPass","OCR status","Face compare status","Face score value","Face compare result"];
+// Matches the live Google Sheet's actual columns (source: "Order Report Total
+// Remove Name", trimmed layout) as of this build. If columns are added/removed/
+// reordered in the sheet, update this list to match so the downloadable
+// template stays a reliable manual-upload starting point.
+const TEMPLATE_HEADERS = ["No.","Order Create Date","Order ID","Order operator","Order Type","Order Status","Payment Status","Order Workflow Status","Order Cancelled reason","Order Fulfillment Success/Failed reason","Product Type","Product Cat","Product Sub Cat","Brand Name","Product Name","Product Full Name","quantity","Current Package RC","New Package RC","New Proposition Name","Payment Date","Total Payment","Delivery Type","Delivery Shop Name","Delivery Shop Code","Shipping Status","Shipping Address Province","Dispatch Complete Date","Day to dispatch","Total day to customer"];
 
 /* ============================ Data cleaning (ported from prep) ============================
    Maps a raw row (object keyed by the report's CSV/XLSX headers) into the compact
@@ -75,6 +79,28 @@ function bucketTDC(raw) {
   return ">3 days";
 }
 
+// Collapses "Brand Name" values that duplicate themselves with a separator, e.g.
+// "HONOR l HONOR" or "HONOR | HONOR" -> "HONOR". Only collapses when both sides
+// match exactly (case-insensitively) so genuinely different values are untouched.
+function normalizeBrand(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return s;
+  const dup = s.match(/^(.*?)\s+[|lI]\s+\1$/i);
+  return dup ? dup[1].trim() : s;
+}
+// Canonical uppercase key used for grouping/filtering so casing variants
+// ("Realme" vs "realme") and the collapsed duplicates above are treated as one brand.
+function brandKey(raw) {
+  return normalizeBrand(raw).toUpperCase();
+}
+
+// A row is "accessories" (its own tab, excluded from Device/IOT) when Product Cat
+// or Product Sub Cat mentions accessories or charging cables.
+function isAccessoryRow(r) {
+  const s = `${r.pc || ""} ${r.psc || ""}`.toLowerCase();
+  return s.includes("accessor") || s.includes("charging cable");
+}
+
 function cleanRows(rawRows) {
   const out = [];
   for (const r of rawRows) {
@@ -95,9 +121,11 @@ function cleanRows(rawRows) {
       p: toNum(pick(r, "Total Payment")),
       pn: String(pick(r, "Product Name") ?? ""),
       mc: String(pick(r, "Material Code") ?? ""),
+      pc: String(pick(r, "Product Cat") ?? "").trim(),
+      psc: String(pick(r, "Product Sub Cat") ?? "").trim(),
       shop: String(pick(r, "Delivery Shop Name") ?? ""),
       prov: normProv(pick(r, "Shipping Address Province")),
-      br: String(pick(r, "Brand Name") ?? "").trim(),
+      br: normalizeBrand(pick(r, "Brand Name")),
       cr: String(pick(r, "Order Cancelled reason") ?? "").trim(),
       nr: String(pick(r, "New Package RC") ?? "").trim(),
       cu: String(pick(r, "Current Package RC") ?? "").trim(),
@@ -107,6 +135,13 @@ function cleanRows(rawRows) {
   return out;
 }
 
+// "Successful" = Order Workflow Status does NOT contain "cancel" or "refund"
+// (case-insensitive substring match — e.g. "Cancelled", "Refunded Pending",
+// "Sync File To Legacy Completed" (kept), "Refund Approved" (excluded), etc.)
+function isSuccessfulWorkflow(ows) {
+  const s = (ows || "").toLowerCase();
+  return !s.includes("cancel") && !s.includes("refund");
+}
 
 /* ============================ Palette ============================ */
 const C = {
@@ -144,6 +179,64 @@ function orderTypeColors(names) {
     if (n.includes("sim")) return SIM_TONES[si++ % SIM_TONES.length];
     return OTHER_TONES[oi++ % OTHER_TONES.length];
   });
+}
+
+/* ============================ Brand icons & colors ============================
+   Curated map for common device/accessory brands: official brand color + a
+   Simple Icons (https://simpleicons.org) slug. Icons are fetched live from
+   Simple Icons' CDN, pre-tinted to the brand color via the URL itself
+   (https://cdn.simpleicons.org/<slug>/<hexcolor>) — no bundling needed.
+   Brands not in this list fall back to a deterministic colored initial badge,
+   so the UI never breaks for a brand we haven't curated yet. */
+const BRAND_META = {
+  APPLE:     { color: "#555555", slug: "apple" },
+  SAMSUNG:   { color: "#1428A0", slug: "samsung" },
+  XIAOMI:    { color: "#FF6900", slug: "xiaomi" },
+  REALME:    { color: "#FFC900", slug: "realme" },
+  OPPO:      { color: "#1BA784", slug: "oppo" },
+  VIVO:      { color: "#415FFF", slug: "vivo" },
+  HUAWEI:    { color: "#FF0000", slug: "huawei" },
+  HONOR:     { color: "#0A79FF", slug: "honor" },
+  NOKIA:     { color: "#124191", slug: "nokia" },
+  GOOGLE:    { color: "#4285F4", slug: "google" },
+  MOTOROLA:  { color: "#5A38F1", slug: "motorola" },
+  ASUS:      { color: "#000000", slug: "asus" },
+  ZTE:       { color: "#EB6100", slug: "zte" },
+  ONEPLUS:   { color: "#F5010C", slug: "oneplus" },
+  SONY:      { color: "#000000", slug: "sony" },
+  LG:        { color: "#A50034", slug: "lg" },
+  ANKER:     { color: "#000000", slug: "anker" },
+  BASEUS:    { color: "#E60012", slug: null },
+  UGREEN:    { color: "#0FA968", slug: null },
+};
+// Deterministic (not random) fallback color so an uncurated brand always
+// renders the same color across reloads.
+function colorFromString(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return `hsl(${h % 360}, 55%, 42%)`;
+}
+function brandMeta(name) {
+  const key = brandKey(name);
+  return BRAND_META[key] || { color: colorFromString(key || "?"), slug: null };
+}
+function BrandBadge({ name, size = 18 }) {
+  const meta = brandMeta(name);
+  const [imgOk, setImgOk] = useState(!!meta.slug);
+  const hex = (typeof meta.color === "string" && meta.color.startsWith("#")) ? meta.color.slice(1) : null;
+  return meta.slug && imgOk && hex ? (
+    <img
+      src={`https://cdn.simpleicons.org/${meta.slug}/${hex}`}
+      width={size} height={size} alt="" style={{ display: "block", flex: "none" }}
+      onError={() => setImgOk(false)}
+    />
+  ) : (
+    <span style={{
+      width: size, height: size, borderRadius: "50%", background: meta.color, color: "#fff",
+      fontSize: size * 0.5, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center",
+      flex: "none", lineHeight: 1,
+    }}>{String(name || "?").trim().charAt(0).toUpperCase()}</span>
+  );
 }
 
 // Items 5 — Order Status / Workflow Status: red reserved only for cancellations.
@@ -218,13 +311,16 @@ const TODAY = new Date(2026, 5, 8, 23, 59); // dataset reference "today" = 08/06
 const fmt = (n) => n.toLocaleString("en-US");
 const fmtMoney = (n) => "฿" + Math.round(n).toLocaleString("en-US");
 
-/* ============================ Tab filters ============================ */
+/* ============================ Tab filters ============================
+   Tests receive the full row (not just Order Type) so Device/IOT can exclude
+   accessory-category rows, which get their own dedicated tab instead. */
 const TABS = [
   { id: "all", label: "All Data", test: () => true },
-  { id: "device", label: "Device", test: (t) => t.includes("device") || t === "single_product" },
-  { id: "postpaid", label: "Postpaid", test: (t) => t.includes("postpaid") || t.includes("p2p") },
-  { id: "prepaid", label: "Prepaid", test: (t) => t.includes("prepaid") },
-  { id: "iot", label: "IOT", test: (t) => t.includes("iot") || t.includes("tol") },
+  { id: "device", label: "Device", test: (r) => !isAccessoryRow(r) && ((r.ot||"").toLowerCase().includes("device") || (r.ot||"").toLowerCase() === "single_product") },
+  { id: "postpaid", label: "Postpaid", test: (r) => (r.ot||"").toLowerCase().includes("postpaid") || (r.ot||"").toLowerCase().includes("p2p") },
+  { id: "prepaid", label: "Prepaid", test: (r) => (r.ot||"").toLowerCase().includes("prepaid") },
+  { id: "iot", label: "IOT", test: (r) => !isAccessoryRow(r) && ((r.ot||"").toLowerCase().includes("iot") || (r.ot||"").toLowerCase().includes("tol")) },
+  { id: "accessories", label: "Accessories", test: (r) => isAccessoryRow(r) },
 ];
 
 /* ============================ Card shell ============================ */
@@ -487,6 +583,7 @@ function TopTable({ rows, groupKey, nameLabel, codeKey }) {
 //   metric     : which measure the % follows — "gross" uses gross ÷ gross, else count ÷ count
 function PeriodBar({ rows, denomRows, color, label, metric }) {
   const [period, setPeriod] = useState("WoW");
+  const [view, setView] = useState("amount"); // amount (bar) | percent (line)
   const periods = ["DoD", "WoW", "MoM", "QoQ"];
   const keyOf = (d, p) => {
     if (p === "DoD") return dayKey(d);
@@ -507,6 +604,7 @@ function PeriodBar({ rows, denomRows, color, label, metric }) {
   }, [rows, denomRows, period, useGross]);
   const total = bars.reduce((s, b) => s + b.value, 0);
   const showPct = period !== "DoD" && denomRows;
+  const canToggleView = !!denomRows; // % view only makes sense when there's a denominator
 
   const pctLabel = (props) => {
     const { x, y, width, index } = props;
@@ -519,27 +617,44 @@ function PeriodBar({ rows, denomRows, color, label, metric }) {
     );
   };
 
+  // Tooltip shows amount AND % together regardless of which series (bar or line) is hovered.
+  const tooltipFormatter = (v, n, p) => {
+    const b = p && p.payload;
+    if (!b) return [v, n];
+    const amtText = `${fmt(b.value)} ${label || "orders"}`;
+    const pctText = b.pct !== null && b.pct !== undefined ? `${b.pct.toFixed(1)}%` : "n/a";
+    return [`${amtText}  ·  ${pctText}`, "Amount & %"];
+  };
+
   return (
     <div>
-      <div style={{ display: "flex", gap: 6, justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+      <div style={{ display: "flex", gap: 10, justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, color: C.sub }}>{fmt(total)} {label || "orders"}{showPct ? ` · % of ${useGross ? "gross selling" : "orders"}` : ""}</span>
-        <div style={{ display: "flex", gap: 6 }}>{periods.map((p) => <Pill key={p} active={period === p} onClick={() => setPeriod(p)}>{p}</Pill>)}</div>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          {canToggleView && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <Pill active={view === "amount"} onClick={() => setView("amount")}>Amount</Pill>
+              <Pill active={view === "percent"} onClick={() => setView("percent")}>%</Pill>
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 6 }}>{periods.map((p) => <Pill key={p} active={period === p} onClick={() => setPeriod(p)}>{p}</Pill>)}</div>
+        </div>
       </div>
       <ResponsiveContainer width="100%" height={240}>
-        <BarChart data={bars} margin={{ top: 24, right: 14, left: 0, bottom: 0 }}>
+        <ComposedChart data={bars} margin={{ top: 24, right: 14, left: 0, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 10, fill: C.sub }} axisLine={{ stroke: C.line }} tickLine={false} />
-          <YAxis tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? (v/1000) + "k" : v} />
-          <Tooltip contentStyle={{ borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12 }}
-            formatter={(v, n, p) => {
-              const b = p && p.payload;
-              const extra = b && b.pct !== null && b.pct !== undefined ? `  ·  ${b.pct.toFixed(1)}% of ${useGross ? "gross" : "orders"}` : "";
-              return [fmt(v) + extra, "Orders"];
-            }} />
-          <Bar dataKey="value" fill={color} radius={[3, 3, 0, 0]}>
-            <LabelList content={pctLabel} />
-          </Bar>
-        </BarChart>
+          <YAxis tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false}
+            tickFormatter={(v) => view === "percent" ? v.toFixed(0) + "%" : (v >= 1000 ? (v/1000) + "k" : v)} />
+          <Tooltip contentStyle={{ borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={tooltipFormatter} />
+          {view === "amount" ? (
+            <Bar dataKey="value" fill={color} radius={[3, 3, 0, 0]}>
+              <LabelList content={pctLabel} />
+            </Bar>
+          ) : (
+            <Line type="monotone" dataKey="pct" stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} isAnimationActive={false} connectNulls />
+          )}
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );
@@ -613,8 +728,8 @@ function effRC(r) {
   return nr || cu || null;
 }
 // device order types only (e.g. device_bundle_new, device_bundle_existing, device_bundle_p2p)
-function isDeviceType(ot) {
-  return String(ot || "").toLowerCase().includes("device");
+function isDeviceType(r) {
+  return String(r && r.ot || "").toLowerCase().includes("device") && !isAccessoryRow(r || {});
 }
 function MostPopularRC({ rows }) {
   const [nameQ, setNameQ] = useState("");
@@ -622,7 +737,7 @@ function MostPopularRC({ rows }) {
   const [openBrand, setOpenBrand] = useState(null);
 
   // base population: device order types only, and must have an effective RC
-  const base = useMemo(() => rows.filter((r) => isDeviceType(r.ot) && effRC(r) !== null), [rows]);
+  const base = useMemo(() => rows.filter((r) => isDeviceType(r) && effRC(r) !== null), [rows]);
   const brands = useMemo(() => {
     const s = new Set(); base.forEach((r) => { if (r.br) s.add(r.br); });
     return Array.from(s).sort();
@@ -716,21 +831,22 @@ function MostPopularRC({ rows }) {
 }
 
 /* ============================ Widget 15: Upsize package ============================
-   upsize = new RC - current RC. No new RC -> "RC not change".
+   upsize = new RC - current RC. No new RC, OR new RC == current RC (±0),
+   both count as "RC not change" per a single consolidated bucket.
    Rows missing new AND current RC, or missing current (no baseline), are filtered out. */
 function UpsizePackage({ rows }) {
   const data = useMemo(() => {
     const m = {};
     const add = (k) => { m[k] = (m[k] || 0) + 1; };
     rows.forEach((r) => {
-      if (!isDeviceType(r.ot)) return;   // device order types only
+      if (!isDeviceType(r)) return;   // device order types only
       const nr = r.nr && r.nr !== "-" ? r.nr : null;
       const cu = r.cu && r.cu !== "-" ? r.cu : null;
       if (!cu) return;            // need a current RC baseline to compute upsize; drop otherwise
       if (!nr) { add("RC not change"); return; }
       const d = parseFloat(nr) - parseFloat(cu);
       if (isNaN(d)) return;
-      add(d === 0 ? "No change (±0)" : (d > 0 ? `+${d}` : `${d}`));
+      add(d === 0 ? "RC not change" : (d > 0 ? `+${d}` : `${d}`));
     });
     return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   }, [rows]);
@@ -1112,6 +1228,9 @@ function Dashboard() {
   const [tab, setTab] = useState("all");
   const [metric, setMetric] = useState("orders");
   const [dataset, setDataset] = useState("success"); // success | total
+  const [result, setResult] = useState("all"); // all | successful — Order Workflow Status excludes cancel/refund
+  const [gbrand, setGbrand] = useState("all"); // "all" or a brandKey()
+  const [brandMenuOpen, setBrandMenuOpen] = useState(false);
   const [delivery, setDelivery] = useState("normal"); // normal | pickup | all
   const [op, setOp] = useState("all"); // all | TRUE | DTAC
   const [from, setFrom] = useState("");
@@ -1123,6 +1242,21 @@ function Dashboard() {
   const [source, setSource] = useState({ kind: "default", name: "VC Ecommerce report (built-in)", count: RAW.length });
   const [loadErr, setLoadErr] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Distinct brands present in the data, for the Brand filter. Keyed/deduped via
+  // brandKey() (handles casing + the "X l X" duplicate pattern), sorted by volume,
+  // most-common first — display label uses the first-seen original casing.
+  const brandList = useMemo(() => {
+    const counts = {}; // key -> { label, n }
+    rows.forEach((r) => {
+      const raw = (r.br || "").trim();
+      if (!raw || raw === "-") return;
+      const key = brandKey(raw);
+      if (!counts[key]) counts[key] = { key, label: raw, n: 0 };
+      counts[key].n += 1;
+    });
+    return Object.values(counts).sort((a, b) => b.n - a.n);
+  }, [rows]);
 
   // Apps Script Web App — reads the sheet's cells directly (no file-size limit) and returns CSV.
   // Sheet can stay restricted; this proxy runs as the deploying account.
@@ -1227,14 +1361,17 @@ function Dashboard() {
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
     return rows.filter((r) => {
-      const ot = (r.ot || "").toLowerCase();
-      if (!tabDef.test(ot)) return false;
+      if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       // dataset
       if (dataset === "success") {
         if (r.ps === "Pending" || r.ps === "-") return false;
         if (r.os === "Cancelled") return false;
       }
+      // result — successful orders only (workflow status excludes cancel/refund)
+      if (result === "successful" && !isSuccessfulWorkflow(r.ows)) return false;
+      // brand
+      if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
       // delivery
       if (delivery === "normal" && r.dt !== "Normal Delivery") return false;
       if (delivery === "pickup" && r.dt !== "Pickup at shop/ No delivery") return false;
@@ -1243,7 +1380,7 @@ function Dashboard() {
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, dataset, delivery, from, to]);
+  }, [rows, tab, op, dataset, result, gbrand, delivery, from, to]);
 
   // Pickup-shop widget: shop names only exist on pickup orders, so this view always
   // uses pickup rows regardless of the global Delivery toggle (otherwise it's empty
@@ -1253,19 +1390,20 @@ function Dashboard() {
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
     return rows.filter((r) => {
-      const ot = (r.ot || "").toLowerCase();
-      if (!tabDef.test(ot)) return false;
+      if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       if (dataset === "success") {
         if (r.ps === "Pending" || r.ps === "-") return false;
         if (r.os === "Cancelled") return false;
       }
+      if (result === "successful" && !isSuccessfulWorkflow(r.ows)) return false;
+      if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
       if (r.dt !== "Pickup at shop/ No delivery") return false;
       const d = parseDate(r.d);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, dataset, from, to]);
+  }, [rows, tab, op, dataset, result, gbrand, from, to]);
 
   // Items 5 & 6 — "Payment not process": orders cancelled AND payment still pending.
   // Applies tab / operator / date filters; ignores dataset & delivery toggles by design.
@@ -1274,16 +1412,16 @@ function Dashboard() {
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
     return rows.filter((r) => {
-      const ot = (r.ot || "").toLowerCase();
-      if (!tabDef.test(ot)) return false;
+      if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
+      if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
       if (r.os !== "Cancelled") return false;
       if (r.ps !== "Pending") return false;
       const d = parseDate(r.d);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, from, to]);
+  }, [rows, tab, op, gbrand, from, to]);
 
   // Shared base population (tab / operator / date filters only) used as denominators
   // and numerators for the cancellation widgets.
@@ -1292,14 +1430,14 @@ function Dashboard() {
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
     return rows.filter((r) => {
-      const ot = (r.ot || "").toLowerCase();
-      if (!tabDef.test(ot)) return false;
+      if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
+      if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
       const d = parseDate(r.d);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, from, to]);
+  }, [rows, tab, op, gbrand, from, to]);
   // Widget 2/3 numerator: cancelled AND paid
   const paidCancelledRows = useMemo(() => baseRows.filter((r) => r.os === "Cancelled" && r.ps === "Paid"), [baseRows]);
   // Widget 2 denominator: all paid orders
@@ -1403,6 +1541,50 @@ function Dashboard() {
             <Pill active={dataset === "total"} onClick={() => setDataset("total")}>Total transactions</Pill>
           </ControlGroup>
           <Divider />
+          <ControlGroup label="Order Result">
+            <Pill active={result === "all"} onClick={() => setResult("all")}>All orders</Pill>
+            <Pill active={result === "successful"} onClick={() => setResult("successful")}>Successful orders only</Pill>
+          </ControlGroup>
+          <Divider />
+          <ControlGroup label="Brand">
+            <div style={{ position: "relative" }}>
+              <button onClick={() => setBrandMenuOpen((o) => !o)} style={{
+                display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, borderRadius: 8,
+                padding: "5px 10px", fontSize: 12, color: C.ink, background: "#fff", cursor: "pointer",
+              }}>
+                {gbrand !== "all" && <BrandBadge name={gbrand} size={16} />}
+                <span>{gbrand === "all" ? "All brands" : ((brandList.find((b) => b.key === gbrand) || {}).label || gbrand)}</span>
+                <span style={{ fontSize: 9, color: C.sub }}>▾</span>
+              </button>
+              {brandMenuOpen && (
+                <>
+                  <div onClick={() => setBrandMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 19 }} />
+                  <div style={{
+                    position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 20, background: "#fff",
+                    border: `1px solid ${C.line}`, borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
+                    padding: 6, minWidth: 210, maxHeight: 320, overflowY: "auto",
+                  }}>
+                    <div onClick={() => { setGbrand("all"); setBrandMenuOpen(false); }} style={{
+                      padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 12,
+                      fontWeight: gbrand === "all" ? 700 : 400, background: gbrand === "all" ? C.soft : "transparent",
+                    }}>All brands</div>
+                    {brandList.map((b) => (
+                      <div key={b.key} onClick={() => { setGbrand(b.key); setBrandMenuOpen(false); }} style={{
+                        display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6, cursor: "pointer",
+                        fontSize: 12, fontWeight: gbrand === b.key ? 700 : 400, background: gbrand === b.key ? C.soft : "transparent",
+                      }}>
+                        <BrandBadge name={b.label} size={16} />
+                        <span style={{ flex: 1 }}>{b.label}</span>
+                        <span style={{ color: C.sub, fontSize: 11 }}>{fmt(b.n)}</span>
+                      </div>
+                    ))}
+                    {brandList.length === 0 && <div style={{ padding: 8, fontSize: 12, color: C.sub }}>No brand data in range</div>}
+                  </div>
+                </>
+              )}
+            </div>
+          </ControlGroup>
+          <Divider />
           <ControlGroup label="Delivery">
             <Pill active={delivery === "normal"} onClick={() => setDelivery("normal")}>Normal delivery</Pill>
             <Pill active={delivery === "pickup"} onClick={() => setDelivery("pickup")}>Pickup / no delivery</Pill>
@@ -1491,7 +1673,7 @@ function Dashboard() {
         </div>
 
         <div style={{ textAlign: "center", color: C.sub, fontSize: 11, padding: "8px 0 24px" }}>
-          Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"}
+          Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"} · {result === "successful" ? "Successful orders only" : "All order results"}{gbrand !== "all" ? ` · Brand: ${(brandList.find(b=>b.key===gbrand)||{}).label || gbrand}` : ""}
         </div>
       </div>
     </div>
