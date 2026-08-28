@@ -110,18 +110,37 @@ function brandKey(raw) {
   return normalizeBrand(raw).toUpperCase();
 }
 
-// A row is "accessories" (its own tab, excluded from Device/IOT) when either:
-//   1. Product Cat or Product Sub Cat mentions accessories or charging cables, OR
-//   2. It's a product-bearing row (has a Product Name) with no Brand Name — real
-//      devices always carry a brand, so a product with no brand is treated as an
-//      accessory instead. SIM-only/plan rows (no Product Name at all) are
-//      untouched by this rule, since they never carry a brand either.
-function isAccessoryRow(r) {
-  const cat = `${r.pc || ""} ${r.psc || ""}`.toLowerCase();
-  if (cat.includes("accessor") || cat.includes("charging cable")) return true;
-  const hasProduct = r.pn && r.pn !== "-";
-  const hasBrand = r.br && r.br !== "-";
-  return !!(hasProduct && !hasBrand);
+// ===== Row classification (replaces the old separate device/postpaid/prepaid/
+// iot/accessories checks) — every row gets exactly one category, decided by
+// these rules in order (first match wins):
+//   1. Order Type or Product Name mentions "post paid sim" / "postpaid sim" /
+//      "รายเดือน" (Thai for "monthly", i.e. postpaid)              -> postpaid
+//   2. Order Type or Product Name mentions "sim" / "ซิม" (Thai for SIM) -> prepaid
+//   3. Brand Name mentions "true"                                  -> iot
+//   4. Brand Name is one of the known device brands, UNLESS the
+//      Product Name is an accessory item (airpod/charger/case/adaptor) -> device
+//   5. anything else                                               -> accessories
+const DEVICE_BRANDS = ["apple", "samsung", "xiaomi", "oppo", "vivo", "huawei", "honor", "realme", "infinix", "nothing"];
+const ACCESSORY_PRODUCT_KEYWORDS = ["airpod", "charger", "case", "adaptor", "adapter"];
+function classifyRow(r) {
+  const combined = `${r.ot || ""} ${r.pn || ""}`.toLowerCase();
+  const brLower = (r.br || "").toLowerCase();
+
+  if (combined.includes("post paid sim") || combined.includes("postpaid sim") || combined.includes("รายเดือน")) {
+    return "postpaid";
+  }
+  if (combined.includes("sim") || combined.includes("ซิม")) {
+    return "prepaid";
+  }
+  if (brLower.includes("true")) {
+    return "iot";
+  }
+  const isKnownDeviceBrand = DEVICE_BRANDS.some((b) => brLower.includes(b));
+  const isAccessoryProduct = ACCESSORY_PRODUCT_KEYWORDS.some((k) => (r.pn || "").toLowerCase().includes(k));
+  if (isKnownDeviceBrand && !isAccessoryProduct) {
+    return "device";
+  }
+  return "accessories";
 }
 
 function cleanRows(rawRows) {
@@ -339,15 +358,15 @@ const fmt = (n) => n.toLocaleString("en-US");
 const fmtMoney = (n) => "฿" + Math.round(n).toLocaleString("en-US");
 
 /* ============================ Tab filters ============================
-   Tests receive the full row (not just Order Type) so Device/IOT can exclude
-   accessory-category rows, which get their own dedicated tab instead. */
+   Each non-"all" tab is exactly the rows classifyRow() assigns to that
+   category, so every row belongs to precisely one tab (mutually exclusive). */
 const TABS = [
   { id: "all", label: "All Data", test: () => true },
-  { id: "device", label: "Device", test: (r) => !isAccessoryRow(r) && ((r.ot||"").toLowerCase().includes("device") || (r.ot||"").toLowerCase() === "single_product") },
-  { id: "postpaid", label: "Postpaid", test: (r) => (r.ot||"").toLowerCase().includes("postpaid") || (r.ot||"").toLowerCase().includes("p2p") },
-  { id: "prepaid", label: "Prepaid", test: (r) => (r.ot||"").toLowerCase().includes("prepaid") },
-  { id: "iot", label: "IOT", test: (r) => !isAccessoryRow(r) && ((r.ot||"").toLowerCase().includes("iot") || (r.ot||"").toLowerCase().includes("tol")) },
-  { id: "accessories", label: "Accessories", test: (r) => isAccessoryRow(r) },
+  { id: "device", label: "Device", test: (r) => classifyRow(r) === "device" },
+  { id: "postpaid", label: "Postpaid", test: (r) => classifyRow(r) === "postpaid" },
+  { id: "prepaid", label: "Prepaid", test: (r) => classifyRow(r) === "prepaid" },
+  { id: "iot", label: "IOT", test: (r) => classifyRow(r) === "iot" },
+  { id: "accessories", label: "Accessories", test: (r) => classifyRow(r) === "accessories" },
 ];
 
 /* ============================ Card shell ============================ */
@@ -754,9 +773,10 @@ function effRC(r) {
   const cu = r.cu && r.cu !== "-" ? r.cu : null;
   return nr || cu || null;
 }
-// device order types only (e.g. device_bundle_new, device_bundle_existing, device_bundle_p2p)
+// device order types only — now delegates to the same classifyRow() used by
+// the Device tab, so RC/Upsize widgets stay consistent with tab membership.
 function isDeviceType(r) {
-  return String(r && r.ot || "").toLowerCase().includes("device") && !isAccessoryRow(r || {});
+  return classifyRow(r || {}) === "device";
 }
 function MostPopularRC({ rows }) {
   const [nameQ, setNameQ] = useState("");
@@ -1258,6 +1278,7 @@ function Dashboard() {
   const [result, setResult] = useState("all"); // all | successful — Order Workflow Status excludes cancel/refund
   const [gbrand, setGbrand] = useState("all"); // "all" or a brandKey()
   const [brandMenuOpen, setBrandMenuOpen] = useState(false);
+  const [topOpen, setTopOpen] = useState(true); // frozen header/upload/controls/tabs — collapsible on both desktop & mobile
   const [delivery, setDelivery] = useState("normal"); // normal | pickup | all
   const [op, setOp] = useState("all"); // all | TRUE | DTAC
   const [from, setFrom] = useState("");
@@ -1493,6 +1514,20 @@ function Dashboard() {
 
         {/* ===== Frozen top section: header, upload, controls, tabs ===== */}
         <div style={{ position: "sticky", top: 0, zIndex: 40, background: "#FAFAFB", paddingTop: 4, marginLeft: "calc(-1 * clamp(12px,3vw,28px))", marginRight: "calc(-1 * clamp(12px,3vw,28px))", paddingLeft: "clamp(12px,3vw,28px)", paddingRight: "clamp(12px,3vw,28px)", boxShadow: "0 6px 12px -8px rgba(0,0,0,0.12)" }}>
+
+        {/* Always-visible collapse toggle — works identically on desktop and mobile */}
+        <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4, paddingBottom: topOpen ? 4 : 8 }}>
+          <button onClick={() => setTopOpen((o) => !o)} style={{
+            display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, background: "#fff",
+            color: C.sub, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+          }}>
+            <span style={{ fontSize: 10 }}>{topOpen ? "▲" : "▼"}</span>
+            {topOpen ? "Hide filters" : `Show filters${tab !== "all" ? ` · ${TABS.find(t=>t.id===tab).label}` : ""}`}
+          </button>
+        </div>
+
+        {topOpen && (
+        <>
         {/* Header */}
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: 16, marginBottom: 16 }}>
           <div>
@@ -1629,6 +1664,8 @@ function Dashboard() {
             }}>{t.label}</button>
           ))}
         </div>
+        </>
+        )}
         </div>
         {/* ===== end frozen section ===== */}
 
