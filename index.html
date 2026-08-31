@@ -1508,6 +1508,16 @@ function Dashboard() {
 
   const selStyle = { border: `1px solid ${C.line}`, borderRadius: 8, padding: "6px 8px", fontSize: 12, color: C.ink, background: "#fff" };
 
+  // Human-readable labels for the collapsed-filter summary line
+  const fmtDLabel = (s) => s ? new Date(s + "T00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
+  const fromLabel = fmtDLabel(from) || "earliest date";
+  const toLabel = fmtDLabel(to) || "latest date";
+  const metricLabel = METRICS[metric].label;
+  const datasetLabel = dataset === "success" ? "Successful payment" : "Total transactions";
+  const resultLabel = result === "successful" ? "Successful orders only" : "All orders";
+  const deliveryLabel = delivery === "normal" ? "Normal delivery" : delivery === "pickup" ? "Pickup / no delivery" : "All delivery types";
+  const brandLabel = gbrand !== "all" ? ((brandList.find((b) => b.key === gbrand) || {}).label || gbrand) : null;
+
   return (
     <div style={{ background: "#FAFAFB", minHeight: "100vh", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", color: C.ink, padding: "20px clamp(12px,3vw,28px)" }}>
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
@@ -1515,38 +1525,43 @@ function Dashboard() {
         {/* ===== Frozen top section: header, upload, controls, tabs ===== */}
         <div style={{ position: "sticky", top: 0, zIndex: 40, background: "#FAFAFB", paddingTop: 4, marginLeft: "calc(-1 * clamp(12px,3vw,28px))", marginRight: "calc(-1 * clamp(12px,3vw,28px))", paddingLeft: "clamp(12px,3vw,28px)", paddingRight: "clamp(12px,3vw,28px)", boxShadow: "0 6px 12px -8px rgba(0,0,0,0.12)" }}>
 
-        {/* Always-visible collapse toggle — works identically on desktop and mobile */}
-        <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4, paddingBottom: topOpen ? 4 : 8 }}>
-          <button onClick={() => setTopOpen((o) => !o)} style={{
-            display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, background: "#fff",
-            color: C.sub, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer",
-          }}>
-            <span style={{ fontSize: 10 }}>{topOpen ? "▲" : "▼"}</span>
-            {topOpen ? "Hide filters" : `Show filters${tab !== "all" ? ` · ${TABS.find(t=>t.id===tab).label}` : ""}`}
-          </button>
-        </div>
-
-        {topOpen && (
-        <>
-        {/* Header */}
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: 16, marginBottom: 16 }}>
+        {/* Header — title always stays visible; collapse toggle sits beside it */}
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: topOpen ? 16 : 8, paddingTop: 4 }}>
           <div>
             <div style={{ fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: C.sub, fontWeight: 600 }}>VC · Ecommerce</div>
             <h1 style={{ margin: "2px 0 0", fontSize: "clamp(19px, 5.5vw, 26px)", fontWeight: 800, letterSpacing: "-0.02em" }}>VC - Ecommerce Sales & Fulfillment Dashboard</h1>
             {updated && <div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>Updated: <span style={{ color: C.ink, fontWeight: 600 }}>{updated}</span></div>}
           </div>
-          {/* Filters top-right */}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={selStyle} />
-              <span style={{ color: C.sub, fontSize: 12 }}>→</span>
-              <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={selStyle} />
-            </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <Pill active={op === "all"} onClick={() => setOp("all")}>All operators</Pill>
-              <button onClick={() => setOp("TRUE")} style={{ border: `1px solid ${op === "TRUE" ? C.true : C.line}`, background: op === "TRUE" ? C.true : "#fff", color: op === "TRUE" ? "#fff" : C.true, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>True</button>
-              <button onClick={() => setOp("DTAC")} style={{ border: `1px solid ${op === "DTAC" ? C.dtac : C.line}`, background: op === "DTAC" ? C.dtac : "#fff", color: op === "DTAC" ? "#fff" : C.dtac, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>dtac</button>
-            </div>
+          <button onClick={() => setTopOpen((o) => !o)} style={{
+            display: "flex", alignItems: "center", gap: 6, border: `1px solid ${C.line}`, background: "#fff",
+            color: C.sub, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", flex: "none",
+          }}>
+            <span style={{ fontSize: 10 }}>{topOpen ? "▲" : "▼"}</span>
+            {topOpen ? "Hide filters" : "Show filters"}
+          </button>
+        </div>
+
+        {/* Collapsed-state summary — 2 lines covering the currently active filters */}
+        {!topOpen && (
+          <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7, marginBottom: 10 }}>
+            <div>Data between <strong style={{ color: C.ink }}>{fromLabel}</strong> and <strong style={{ color: C.ink }}>{toLabel}</strong> · Measuring by <strong style={{ color: C.ink }}>{metricLabel}</strong></div>
+            <div>{datasetLabel} · {resultLabel} · {deliveryLabel}{brandLabel ? ` · Brand: ${brandLabel}` : ""}{tab !== "all" ? ` · Tab: ${TABS.find(t=>t.id===tab).label}` : ""}</div>
+          </div>
+        )}
+
+        {topOpen && (
+        <>
+        {/* Filters top-right: date range + operator */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={selStyle} />
+            <span style={{ color: C.sub, fontSize: 12 }}>→</span>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={selStyle} />
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <Pill active={op === "all"} onClick={() => setOp("all")}>All operators</Pill>
+            <button onClick={() => setOp("TRUE")} style={{ border: `1px solid ${op === "TRUE" ? C.true : C.line}`, background: op === "TRUE" ? C.true : "#fff", color: op === "TRUE" ? "#fff" : C.true, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>True</button>
+            <button onClick={() => setOp("DTAC")} style={{ border: `1px solid ${op === "DTAC" ? C.dtac : C.line}`, background: op === "DTAC" ? C.dtac : "#fff", color: op === "DTAC" ? "#fff" : C.dtac, borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>dtac</button>
           </div>
         </div>
 
