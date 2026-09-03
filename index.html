@@ -162,6 +162,7 @@ function cleanRows(rawRows) {
       q: toNum(pick(r, "quantity")),
       p: toNum(pick(r, "Total Payment")),
       pn: String(pick(r, "Product Name") ?? ""),
+      pfn: String(pick(r, "Product Full Name") ?? ""),
       mc: String(pick(r, "Material Code") ?? ""),
       pc: String(pick(r, "Product Cat") ?? "").trim(),
       psc: String(pick(r, "Product Sub Cat") ?? "").trim(),
@@ -264,6 +265,13 @@ function colorFromString(s) {
 function brandMeta(name) {
   const key = brandKey(name);
   return BRAND_META[key] || { color: colorFromString(key || "?"), slug: null };
+}
+// Case-insensitive substring match against Product Name, Product Full Name, or Material Code.
+function matchesProductQ(r, qLower) {
+  if (!qLower) return true;
+  return (r.pn || "").toLowerCase().includes(qLower)
+    || (r.pfn || "").toLowerCase().includes(qLower)
+    || (r.mc || "").toLowerCase().includes(qLower);
 }
 function BrandBadge({ name, size = 18 }) {
   const meta = brandMeta(name);
@@ -1277,6 +1285,7 @@ function Dashboard() {
   const [dataset, setDataset] = useState("success"); // success | total
   const [result, setResult] = useState("all"); // all | successful — Order Workflow Status excludes cancel/refund
   const [gbrand, setGbrand] = useState("all"); // "all" or a brandKey()
+  const [productQ, setProductQ] = useState(""); // free-text search over Product Name + Product Full Name
   const [brandMenuOpen, setBrandMenuOpen] = useState(false);
   const [topOpen, setTopOpen] = useState(true); // frozen header/upload/controls/tabs — collapsible on both desktop & mobile
   const [delivery, setDelivery] = useState("normal"); // normal | pickup | all
@@ -1408,6 +1417,7 @@ function Dashboard() {
     const tabDef = TABS.find((t) => t.id === tab);
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
+    const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
@@ -1420,6 +1430,8 @@ function Dashboard() {
       if (result === "successful" && !isSuccessfulWorkflow(r.ows)) return false;
       // brand
       if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
+      // product name / product full name
+      if (!matchesProductQ(r, qLower)) return false;
       // delivery
       if (delivery === "normal" && r.dt !== "Normal Delivery") return false;
       if (delivery === "pickup" && r.dt !== "Pickup at shop/ No delivery") return false;
@@ -1428,7 +1440,7 @@ function Dashboard() {
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, dataset, result, gbrand, delivery, from, to]);
+  }, [rows, tab, op, dataset, result, gbrand, productQ, delivery, from, to]);
 
   // Pickup-shop widget: shop names only exist on pickup orders, so this view always
   // uses pickup rows regardless of the global Delivery toggle (otherwise it's empty
@@ -1437,6 +1449,7 @@ function Dashboard() {
     const tabDef = TABS.find((t) => t.id === tab);
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
+    const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
@@ -1446,12 +1459,13 @@ function Dashboard() {
       }
       if (result === "successful" && !isSuccessfulWorkflow(r.ows)) return false;
       if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
+      if (!matchesProductQ(r, qLower)) return false;
       if (r.dt !== "Pickup at shop/ No delivery") return false;
       const d = parseDate(r.d);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, dataset, result, gbrand, from, to]);
+  }, [rows, tab, op, dataset, result, gbrand, productQ, from, to]);
 
   // Items 5 & 6 — "Payment not process": orders cancelled AND payment still pending.
   // Applies tab / operator / date filters; ignores dataset & delivery toggles by design.
@@ -1459,17 +1473,19 @@ function Dashboard() {
     const tabDef = TABS.find((t) => t.id === tab);
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
+    const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
+      if (!matchesProductQ(r, qLower)) return false;
       if (r.os !== "Cancelled") return false;
       if (r.ps !== "Pending") return false;
       const d = parseDate(r.d);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, gbrand, from, to]);
+  }, [rows, tab, op, gbrand, productQ, from, to]);
 
   // Shared base population (tab / operator / date filters only) used as denominators
   // and numerators for the cancellation widgets.
@@ -1477,15 +1493,17 @@ function Dashboard() {
     const tabDef = TABS.find((t) => t.id === tab);
     const fromD = from ? new Date(from + "T00:00") : null;
     const toD = to ? new Date(to + "T23:59") : null;
+    const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
+      if (!matchesProductQ(r, qLower)) return false;
       const d = parseDate(r.d);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, gbrand, from, to]);
+  }, [rows, tab, op, gbrand, productQ, from, to]);
   // Widget 2/3 numerator: cancelled AND paid
   const paidCancelledRows = useMemo(() => baseRows.filter((r) => r.os === "Cancelled" && r.ps === "Paid"), [baseRows]);
   // Widget 2 denominator: all paid orders
@@ -1545,7 +1563,7 @@ function Dashboard() {
         {!topOpen && (
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7, marginBottom: 10 }}>
             <div>Data between <strong style={{ color: C.ink }}>{fromLabel}</strong> and <strong style={{ color: C.ink }}>{toLabel}</strong> · Measuring by <strong style={{ color: C.ink }}>{metricLabel}</strong></div>
-            <div>{datasetLabel} · {resultLabel} · {deliveryLabel}{brandLabel ? ` · Brand: ${brandLabel}` : ""}{tab !== "all" ? ` · Tab: ${TABS.find(t=>t.id===tab).label}` : ""}</div>
+            <div>{datasetLabel} · {resultLabel} · {deliveryLabel}{brandLabel ? ` · Brand: ${brandLabel}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}{tab !== "all" ? ` · Tab: ${TABS.find(t=>t.id===tab).label}` : ""}</div>
           </div>
         )}
 
@@ -1662,6 +1680,22 @@ function Dashboard() {
             </div>
           </ControlGroup>
           <Divider />
+          <ControlGroup label="Product">
+            <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+              <input
+                value={productQ} onChange={(e) => setProductQ(e.target.value)}
+                placeholder="Search product name or matcode…"
+                style={{ ...selStyle, minWidth: 180, paddingRight: productQ ? 26 : 8 }}
+              />
+              {productQ && (
+                <button onClick={() => setProductQ("")} title="Clear" style={{
+                  position: "absolute", right: 6, border: "none", background: "none", cursor: "pointer",
+                  color: C.sub, fontSize: 14, lineHeight: 1, padding: 2,
+                }}>×</button>
+              )}
+            </div>
+          </ControlGroup>
+          <Divider />
           <ControlGroup label="Delivery">
             <Pill active={delivery === "normal"} onClick={() => setDelivery("normal")}>Normal delivery</Pill>
             <Pill active={delivery === "pickup"} onClick={() => setDelivery("pickup")}>Pickup / no delivery</Pill>
@@ -1752,7 +1786,7 @@ function Dashboard() {
         </div>
 
         <div style={{ textAlign: "center", color: C.sub, fontSize: 11, padding: "8px 0 24px" }}>
-          Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"} · {result === "successful" ? "Successful orders only" : "All order results"}{gbrand !== "all" ? ` · Brand: ${(brandList.find(b=>b.key===gbrand)||{}).label || gbrand}` : ""}
+          Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"} · {result === "successful" ? "Successful orders only" : "All order results"}{gbrand !== "all" ? ` · Brand: ${(brandList.find(b=>b.key===gbrand)||{}).label || gbrand}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}
         </div>
       </div>
     </div>
@@ -1779,8 +1813,74 @@ function Kpi({ label, value, active, sub }) {
 }
 
 
+const APPS_SCRIPT_BASE_URL = "https://script.google.com/macros/s/AKfycbyqeziM5gbnnGSf-wXg64v80QS7q9mxqxRoXGDgcqIMwl3w7GMjeB0OFafzgXAtpiQb/exec";
+
+/* ============================ Password gate ============================
+   Casual access barrier, not real security (see apps-script/Code.gs for the
+   full caveat). The entered password is POSTed to the Apps Script proxy,
+   which compares it server-side against the current monthly-rotated
+   password and returns only true/false — the real password is never sent
+   to or stored in the browser. Once unlocked, the session stays unlocked
+   until the browser tab/window is closed (sessionStorage), so people don't
+   have to re-enter it on every reload within the same visit. */
+function PasswordGate({ children }) {
+  const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem("vc_dash_unlocked") === "1");
+  const [pw, setPw] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!pw || checking) return;
+    setErr(""); setChecking(true);
+    try {
+      const res = await fetch(APPS_SCRIPT_BASE_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids a CORS preflight
+        body: JSON.stringify({ action: "checkPassword", password: pw }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        sessionStorage.setItem("vc_dash_unlocked", "1");
+        setUnlocked(true);
+      } else {
+        setErr("Incorrect password.");
+      }
+    } catch (e2) {
+      setErr("Could not verify password — check your connection and try again.");
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (unlocked) return children;
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#FAFAFB", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", padding: 20 }}>
+      <form onSubmit={submit} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 320, boxShadow: "0 12px 32px rgba(0,0,0,0.08)" }}>
+        <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#6B7280", marginBottom: 4 }}>VC · Ecommerce</div>
+        <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 800, color: "#1A1A1A" }}>Dashboard access</h2>
+        <input
+          type="password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)}
+          placeholder="Enter password"
+          style={{ width: "100%", padding: "10px 12px", border: "1px solid #E5E7EB", borderRadius: 8, fontSize: 14, marginBottom: 12, boxSizing: "border-box" }}
+        />
+        {err && <div style={{ color: "#DC2626", fontSize: 12, marginBottom: 12 }}>{err}</div>}
+        <button type="submit" disabled={checking || !pw} style={{
+          width: "100%", padding: "10px 12px", borderRadius: 8, border: "none",
+          background: checking || !pw ? "#D1D5DB" : "#1A1A1A", color: "#fff", fontWeight: 700, fontSize: 14,
+          cursor: checking || !pw ? "not-allowed" : "pointer",
+        }}>{checking ? "Checking…" : "Unlock"}</button>
+        <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 14, lineHeight: 1.5 }}>
+          Password rotates monthly and is emailed to the operations team.
+        </div>
+      </form>
+    </div>
+  );
+}
+
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(React.createElement(Dashboard));
+root.render(React.createElement(PasswordGate, null, React.createElement(Dashboard)));
 
 } catch (err) {
   var l=document.getElementById('loading'); if(l) l.style.display='none';
