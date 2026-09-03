@@ -1834,11 +1834,11 @@ function PasswordGate({ children }) {
     if (!pw || checking) return;
     setErr(""); setChecking(true);
     try {
-      const res = await fetch(APPS_SCRIPT_BASE_URL, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain;charset=utf-8" }, // avoids a CORS preflight
-        body: JSON.stringify({ action: "checkPassword", password: pw }),
-      });
+      // GET, not POST — Apps Script Web Apps don't reliably send CORS headers
+      // on doPost responses, so browsers block reading them even when the
+      // request itself succeeds server-side. GET works (same as the CSV fetch).
+      const url = `${APPS_SCRIPT_BASE_URL}?action=checkPassword&password=${encodeURIComponent(pw)}&_=${Date.now()}`;
+      const res = await fetch(url);
       const data = await res.json();
       if (data.ok) {
         sessionStorage.setItem("vc_dash_unlocked", "1");
