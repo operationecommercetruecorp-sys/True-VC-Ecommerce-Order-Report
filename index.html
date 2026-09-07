@@ -1813,16 +1813,23 @@ function Kpi({ label, value, active, sub }) {
 }
 
 
-const APPS_SCRIPT_BASE_URL = "https://script.google.com/macros/s/AKfycbyqeziM5gbnnGSf-wXg64v80QS7q9mxqxRoXGDgcqIMwl3w7GMjeB0OFafzgXAtpiQb/exec";
+const PASSWORD_HASH = "1465bf36fda04421986b0aec0fd891017bdf0963f639a3610b4ddcc2724c9767";
 
 /* ============================ Password gate ============================
-   Casual access barrier, not real security (see apps-script/Code.gs for the
-   full caveat). The entered password is POSTed to the Apps Script proxy,
-   which compares it server-side against the current monthly-rotated
-   password and returns only true/false — the real password is never sent
-   to or stored in the browser. Once unlocked, the session stays unlocked
-   until the browser tab/window is closed (sessionStorage), so people don't
-   have to re-enter it on every reload within the same visit. */
+   Single fixed password, checked entirely client-side — no network call, no
+   dependency on the Apps Script proxy being reachable. This is a casual
+   access barrier, not real security: the hash above is visible to anyone
+   who views the page source, and a determined person could brute-force it
+   offline or just read the plaintext check logic below. It stops casual
+   link-sharing, nothing more.
+   To change the password: open a browser console and run
+     crypto.subtle.digest('SHA-256', new TextEncoder().encode('newpassword')).then(b=>console.log([...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')))
+   then paste the printed hash into PASSWORD_HASH above. */
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function PasswordGate({ children }) {
   const [unlocked, setUnlocked] = useState(() => sessionStorage.getItem("vc_dash_unlocked") === "1");
   const [pw, setPw] = useState("");
@@ -1834,20 +1841,15 @@ function PasswordGate({ children }) {
     if (!pw || checking) return;
     setErr(""); setChecking(true);
     try {
-      // GET, not POST — Apps Script Web Apps don't reliably send CORS headers
-      // on doPost responses, so browsers block reading them even when the
-      // request itself succeeds server-side. GET works (same as the CSV fetch).
-      const url = `${APPS_SCRIPT_BASE_URL}?action=checkPassword&password=${encodeURIComponent(pw)}&_=${Date.now()}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      if (data.ok) {
+      const hash = await sha256Hex(pw);
+      if (hash === PASSWORD_HASH) {
         sessionStorage.setItem("vc_dash_unlocked", "1");
         setUnlocked(true);
       } else {
         setErr("Incorrect password.");
       }
     } catch (e2) {
-      setErr("Could not verify password — check your connection and try again.");
+      setErr("Could not check the password in this browser.");
     } finally {
       setChecking(false);
     }
@@ -1871,9 +1873,6 @@ function PasswordGate({ children }) {
           background: checking || !pw ? "#D1D5DB" : "#1A1A1A", color: "#fff", fontWeight: 700, fontSize: 14,
           cursor: checking || !pw ? "not-allowed" : "pointer",
         }}>{checking ? "Checking…" : "Unlock"}</button>
-        <div style={{ fontSize: 11, color: "#9CA3AF", marginTop: 14, lineHeight: 1.5 }}>
-          Password rotates monthly and is emailed to the operations team.
-        </div>
       </form>
     </div>
   );
