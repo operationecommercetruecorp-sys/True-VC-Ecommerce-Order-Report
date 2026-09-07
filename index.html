@@ -143,14 +143,138 @@ function classifyRow(r) {
   return "accessories";
 }
 
+/* ===================== Date order inference =====================
+   A single value like "02/01/2026" is genuinely ambiguous: 2 January or
+   1 February? Nothing in that string can settle it. But a whole COLUMN
+   usually can — if any row reads "25/09", the 25 cannot be a month, which
+   proves the column is day-first. This scans every date value once, before
+   any parsing, and uses that evidence to lock in the ordering.
+
+   Values from the Apps Script proxy are ISO (YYYY-MM-DD) and skip this
+   entirely; the inference exists for manual uploads and for the case where
+   the proxy hasn't been redeployed yet. */
+let DATE_ORDER = "dmy";                   // "dmy" (day-first) | "mdy" (month-first)
+let DATE_ORDER_INFO = { order: "dmy", basis: "default", dmy: 0, mdy: 0, iso: 0, conflict: false };
+
+function detectDateOrder(rawRows) {
+  let dmy = 0, mdy = 0, iso = 0;
+  for (const r of rawRows) {
+    const v = pick(r, "Order Create Date");
+    if (v === null || v === undefined) continue;
+    const s = String(v).trim();
+    if (!s) continue;
+    const m = s.match(/^(\d{1,4})[\/.\-](\d{1,2})[\/.\-](\d{1,4})/);
+    if (!m) continue;
+    if (String(m[1]).length === 4) { iso++; continue; }   // year-first, unambiguous
+    const a = +m[1], b = +m[2];
+    if (a > 12 && b <= 12) dmy++;        // first slot can't be a month -> day-first
+    else if (b > 12 && a <= 12) mdy++;   // second slot can't be a month -> month-first
+    // both <= 12 -> ambiguous, contributes no evidence
+  }
+
+  const conflict = dmy > 0 && mdy > 0;
+  let order = "dmy", basis;
+  if (conflict) {
+    // Both orderings "proven" in one column means the data is genuinely mixed —
+    // typically half the column was auto-converted by Sheets and half wasn't.
+    // Majority wins, but this is flagged loudly because some rows will be wrong
+    // no matter which way it's read.
+    order = dmy >= mdy ? "dmy" : "mdy";
+    basis = "conflict";
+  } else if (dmy > 0) { order = "dmy"; basis = "proven"; }
+  else if (mdy > 0)   { order = "mdy"; basis = "proven"; }
+  else if (iso > 0)   { order = "dmy"; basis = "iso"; }      // ordering irrelevant
+  else                { order = "dmy"; basis = "assumed"; }  // no evidence either way
+
+  DATE_ORDER = order;
+  DATE_ORDER_INFO = { order, basis, dmy, mdy, iso, conflict };
+
+  if (conflict) {
+    console.warn(
+      `[VC Dashboard] The "Order Create Date" column contains BOTH day-first and month-first ` +
+      `values (${dmy} vs ${mdy} rows). This means part of the column was auto-converted by Google ` +
+      `Sheets. Reading it as ${order === "dmy" ? "DD/MM" : "MM/DD"} (majority), but some rows will be ` +
+      `wrong. Fix: format that column as plain text, then re-import.`
+    );
+  } else if (basis === "assumed") {
+    console.warn(
+      `[VC Dashboard] Every date in "Order Create Date" has both parts <= 12, so day/month order ` +
+      `cannot be proven from the data. Assuming DD/MM. Redeploy the Apps Script proxy to emit ` +
+      `ISO (YYYY-MM-DD) dates and this ambiguity disappears.`
+    );
+  }
+  return DATE_ORDER_INFO;
+}
+
+/* ===================== Order date from Order ID =====================
+   The "Order Create Date" column is a real date cell, so Google Sheets can
+   silently re-interpret it on import (the DD/MM vs MM/DD corruption that has
+   bitten this dashboard repeatedly). The Order ID does not have that problem:
+   it is plain text of the form <T|D><YYMMDD><5 digits> — e.g. "T260801xxxxx"
+   for 1 Aug 2026 — so the date is embedded unambiguously and cannot be
+   rewritten by Sheets.
+
+   The Order ID is therefore the AUTHORITATIVE source for the order date.
+   The date column is used only for the time-of-day (which the ID doesn't
+   carry) and as a fallback when an ID is malformed. */
+function parseOrderIdDate(oid) {
+  const s = String(oid ?? "").trim();
+  // Prefix letter, 6-digit YYMMDD, then the running number. Length of the
+  // trailing number isn't enforced, so unusual-but-valid IDs still parse.
+  const m = s.match(/^[A-Za-z](\d{2})(\d{2})(\d{2})\d+$/);
+  if (!m) return null;
+  const yy = +m[1], mon = +m[2], day = +m[3];
+  if (mon < 1 || mon > 12 || day < 1 || day > 31) return null;
+  const yr = 2000 + yy;
+  const d = new Date(yr, mon - 1, day);
+  // Reject rollovers (e.g. "260231" -> 3 March) rather than accepting a wrong date
+  if (d.getMonth() !== mon - 1 || d.getDate() !== day) return null;
+  return d;
+}
+
+// Where each row's date came from, for the footer indicator + diagnostics.
+let DATE_SOURCE_INFO = { fromId: 0, fromColumn: 0, none: 0, mismatch: 0 };
+
+// Resolves a row's order date, preferring the Order ID. Returns an ISO string
+// ("YYYY-MM-DD HH:mm") so everything downstream parses it unambiguously, or ""
+// when no date could be established at all.
+function resolveRowDate(oid, rawDateCell) {
+  const idDate = parseOrderIdDate(oid);
+  const colDate = parseDate(rawDateCell); // already guarded against future dates
+
+  if (idDate) {
+    // Time-of-day only exists on the column value. Day/month corruption never
+    // affects the clock portion, so the time is safe to reuse even when the
+    // column's date part disagrees with the ID.
+    const hh = colDate ? colDate.getHours() : 0;
+    const mi = colDate ? colDate.getMinutes() : 0;
+    const merged = new Date(idDate.getFullYear(), idDate.getMonth(), idDate.getDate(), hh, mi);
+
+    if (colDate && dayKey(colDate) !== dayKey(idDate)) DATE_SOURCE_INFO.mismatch++;
+    DATE_SOURCE_INFO.fromId++;
+    return isoLocal(merged);
+  }
+
+  if (colDate) { DATE_SOURCE_INFO.fromColumn++; return isoLocal(colDate); }
+  DATE_SOURCE_INFO.none++;
+  return "";
+}
+
+function isoLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}` +
+         ` ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
+}
+
 function cleanRows(rawRows) {
+  detectDateOrder(rawRows);   // must run before any parseDate() call
+  DATE_SOURCE_INFO = { fromId: 0, fromColumn: 0, none: 0, mismatch: 0 };
   const out = [];
   for (const r of rawRows) {
     const oid = pick(r, "Order ID");
     if (oid === undefined || String(oid).trim() === "") continue; // skip blank lines
     const opRaw = String(pick(r, "Order operator") ?? "").trim().toUpperCase();
     out.push({
-      d: String(pick(r, "Order Create Date") ?? ""),
+      d: resolveRowDate(oid, pick(r, "Order Create Date")),
       op: opRaw === "TRUE" ? "TRUE" : "DTAC",
       ot: String(pick(r, "Order Type") ?? ""),
       os: String(pick(r, "Order Status") ?? ""),
@@ -306,62 +430,145 @@ function statusColors(names) {
 }
 
 /* ============================ Helpers ============================ */
-// parse "DD/MM/YYYY HH:mm" -> Date
+// Parse a date cell, then enforce the hard invariant below.
 function parseDate(s) {
   const d = parseDateRaw(s);
   if (!d) return null;
-  return fixImplausibleFutureDate(d);
+  return enforceNotFuture(d);
 }
 
-// Orders can never be created in the future. If a parsed date lands more than a
-// few days ahead of "now", it's almost always a day/month swap — usually introduced
-// by Google Sheets auto-converting an ambiguous "DD/MM" string using MM/DD rules
-// during import (e.g. "12 August" becomes "December 8"). When swapping day and
-// month back lands the date in the plausible past, use that corrected value instead.
-function fixImplausibleFutureDate(d) {
+// HARD RULE: an order cannot have been created in the future, so a parsed date
+// is NEVER allowed past the end of today. This is the last line of defence
+// against the recurring MM/DD-vs-DD/MM corruption that Google Sheets introduces
+// when it auto-converts ambiguous date text on import (turning "12 September"
+// into "9 December", etc.).
+//
+// Resolution order:
+//   1. Already in the past/today -> accept as-is.
+//   2. Day and month are swappable and swapping lands it in the past -> use that
+//      (this is the actual corruption being repaired).
+//   3. Otherwise -> REJECT (return null). Previously this returned the future
+//      date as a last resort, which is exactly how phantom future months kept
+//      reappearing on the dashboard after each sheet update. Excluding the row
+//      from date-based views is always preferable to inventing data that the
+//      sheet does not contain.
+let futureDateRejects = 0; // diagnostic counter, surfaced in the console
+function enforceNotFuture(d) {
   const now = new Date();
-  const graceMs = 3 * 24 * 60 * 60 * 1000; // buffer for timezone/clock skew
-  if (d.getTime() <= now.getTime() + graceMs) return d;
+  // End of today in local time — allows "today" through fully regardless of
+  // clock time, but nothing beyond it.
+  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+  if (d.getTime() <= cutoff.getTime()) return d;
+
+  // Grace window: the sheet is kept in Bangkok time, so a viewer in another
+  // timezone (or with a slightly off clock) can legitimately see a timestamp a
+  // few hours "ahead". Genuine day/month corruption always lands MONTHS away,
+  // never a day or two — so anything this close is treated as clock skew and
+  // accepted unchanged. Without this, an order dated tomorrow would be
+  // "repaired" into a completely different month, which is worse than useless
+  // because nothing would flag it.
+  const graceMs = 2 * 24 * 60 * 60 * 1000;
+  if (d.getTime() <= cutoff.getTime() + graceMs) return d;
 
   const day = d.getDate(), mon = d.getMonth() + 1; // mon is 1-12
-  if (day <= 12) { // only safely swappable when day-of-month is itself a valid month number
+  if (day <= 12) { // only swappable when the day-of-month is itself a valid month number
     const swapped = new Date(d.getFullYear(), day - 1, mon, d.getHours(), d.getMinutes(), d.getSeconds());
-    if (swapped.getTime() <= now.getTime() + graceMs) return swapped;
+    if (swapped.getTime() <= cutoff.getTime() && swapped.getMonth() === day - 1 && swapped.getDate() === mon) {
+      return swapped;
+    }
   }
-  return d; // no plausible correction found — return as parsed rather than guess further
+
+  futureDateRejects++;
+  return null; // unresolvable future date — excluded rather than shown
 }
 
+// Prints a console warning if any dates had to be dropped for being in the
+// future. Silent when the data is clean, so it only speaks up when something
+// upstream (usually a Sheets auto-conversion) has actually gone wrong.
+function reportFutureDateRejects(sourceLabel) {
+  if (futureDateRejects > 0) {
+    console.warn(
+      `[VC Dashboard] ${futureDateRejects} date value(s) from "${sourceLabel}" were in the future and could not be ` +
+      `interpreted as a day/month swap, so they were excluded. This usually means the "Order Create Date" column in ` +
+      `the sheet was auto-converted by Google Sheets — set that column to plain-text format to prevent it.`
+    );
+  }
+  futureDateRejects = 0; // reset so the next load reports only its own issues
+}
+
+// Parses the numeric date shapes the sheet/CSV can produce, always treating a
+// bare "a/b/yyyy" as DAY/MONTH (Thai/UK convention), never US MONTH/DAY.
+//
+// This matters a lot: JS's built-in `new Date("12/09/2026")` interprets that as
+// December 9 (US MM/DD), not 12 September. Falling back to it for numeric dates
+// silently pushed September orders into December. So numeric formats are parsed
+// strictly here and NEVER handed to the native parser — the native parser is
+// only used for unambiguous text-month formats ("2 Aug 2026", ISO strings).
 function parseDateRaw(s) {
-  if (!s) return null;
-  const raw = String(s).trim();
+  if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+  if (s === null || s === undefined) return null;
+  let raw = String(s).trim();
   if (!raw || raw === "-" || raw.toUpperCase() === "#N/A" || raw.toUpperCase() === "N/A") return null;
 
-  // DD/MM/YYYY[ H:mm[:ss]] — day/month/hour need NOT be zero-padded (e.g. "2/8/2026 9:14")
-  let m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  // Normalise separators: "12/09/2026, 14:30" -> "12/09/2026 14:30", collapse spaces.
+  raw = raw.replace(/,/g, " ").replace(/\s+/g, " ").trim();
+
+  // Optional trailing AM/PM (e.g. "12/09/2026 2:30 PM")
+  let ampm = null;
+  const ap = raw.match(/\s*([AaPp])\.?[Mm]\.?$/);
+  if (ap) { ampm = ap[1].toLowerCase(); raw = raw.slice(0, ap.index).trim(); }
+
+  const applyAmPm = (h) => {
+    if (!ampm) return h;
+    if (ampm === "a") return h === 12 ? 0 : h;
+    return h === 12 ? 12 : h + 12;
+  };
+
+  // Split "<date part> [<time part>]" — accepts / - or . as date separators,
+  // and either a space or "T" between date and time.
+  const m = raw.match(/^(\d{1,4})[\/.\-](\d{1,2})[\/.\-](\d{1,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
   if (m) {
-    const day = +m[1], mon = +m[2], yr = +m[3];
-    if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
-      return new Date(yr, mon - 1, day, m[4] ? +m[4] : 0, m[5] ? +m[5] : 0, m[6] ? +m[6] : 0);
+    const a = +m[1], b = +m[2], c = +m[3];
+    const hh = applyAmPm(m[4] ? +m[4] : 0), mi = m[5] ? +m[5] : 0, ss = m[6] ? +m[6] : 0;
+
+    let yr, mon, day;
+    if (String(m[1]).length === 4) {
+      // Year-first: YYYY/MM/DD — unambiguous, no inference needed.
+      yr = a; mon = b; day = c;
+    } else {
+      // Ordering comes from detectDateOrder()'s scan of the whole column, not
+      // from this one value (which may be ambiguous on its own).
+      if (DATE_ORDER === "mdy") { mon = a; day = b; }
+      else                      { day = a; mon = b; }
+      yr = c;
+      // A slot that can't be a month overrides the inference for this row.
+      if (mon > 12 && day <= 12) { const t = day; day = mon; mon = t; }
+      if (yr < 100) yr += yr < 70 ? 2000 : 1900; // 2-digit year
     }
+
+    if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31 && hh <= 23 && mi <= 59) {
+      const d = new Date(yr, mon - 1, day, hh, mi, ss);
+      // Guard against JS silently rolling over invalid dates (e.g. 31/02 -> 3 March)
+      if (d.getMonth() === mon - 1 && d.getDate() === day) return d;
+    }
+    return null;
   }
 
-  // YYYY/MM/DD or YYYY-MM-DD[ H:mm[:ss]]
-  m = raw.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-  if (m) {
-    const yr = +m[1], mon = +m[2], day = +m[3];
-    if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) {
-      return new Date(yr, mon - 1, day, m[4] ? +m[4] : 0, m[5] ? +m[5] : 0, m[6] ? +m[6] : 0);
-    }
-  }
-
-  // Text-month formats, e.g. "Aug 2, 2026" / "2 Aug 2026" / ISO strings / JS Date.toString()
+  // Text-month / ISO formats only, e.g. "Aug 2, 2026", "2 Aug 2026",
+  // "2026-09-12T14:30:00Z", JS Date.toString(). These are unambiguous, so the
+  // native parser is safe here.
   const native = new Date(raw);
   if (!isNaN(native.getTime())) return native;
 
   return null;
 }
 function dayKey(d) { return d ? `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}` : ""; }
-const TODAY = new Date(2026, 5, 8, 23, 59); // dataset reference "today" = 08/06/2026
+// Reference "now" for age/days-pending calculations. Dynamic (not a hardcoded
+// snapshot date) so these stay correct as live data refreshes.
+const TODAY = new Date();
+// Today as YYYY-MM-DD, used to cap the date-range pickers so no future range
+// can be selected (mirrors the never-in-the-future rule applied to the data).
+const todayISO = dayKey(TODAY);
 const fmt = (n) => n.toLocaleString("en-US");
 const fmtMoney = (n) => "฿" + Math.round(n).toLocaleString("en-US");
 
@@ -1338,6 +1545,7 @@ function Dashboard() {
         setRows(cleaned);
         setSource({ kind: "sheet", name: "Google Sheet (live)", count: cleaned.length });
         setTab("all");
+        reportFutureDateRejects("live sheet");
       } catch (e) {
         if (!cancelled) setLoadErr("Could not load the live Google Sheet — showing built-in data. (" + (e.message || e) + ")");
       } finally {
@@ -1389,6 +1597,7 @@ function Dashboard() {
       setRows(cleaned);
       setSource({ kind: "upload", name: file.name, count: cleaned.length });
       setTab("all");
+      reportFutureDateRejects(file.name);
     } catch (e) {
       setLoadErr(e.message || "Could not read that file.");
     } finally {
@@ -1536,6 +1745,32 @@ function Dashboard() {
   const deliveryLabel = delivery === "normal" ? "Normal delivery" : delivery === "pickup" ? "Pickup / no delivery" : "All delivery types";
   const brandLabel = gbrand !== "all" ? ((brandList.find((b) => b.key === gbrand) || {}).label || gbrand) : null;
 
+  // Where the order dates came from, recomputed whenever the dataset changes.
+  // Shown in the footer so this can be verified rather than assumed — this is
+  // the field that has caused repeated silent errors.
+  const dateFmtNote = useMemo(() => {
+    const s = DATE_SOURCE_INFO;
+    const i = DATE_ORDER_INFO;
+    const parts = [];
+
+    if (s.fromId > 0) parts.push(`${fmt(s.fromId)} from Order ID (YYMMDD, unambiguous)`);
+    if (s.fromColumn > 0) {
+      const how = i.basis === "iso" ? "ISO" : (i.order === "dmy" ? "DD/MM" : "MM/DD");
+      parts.push(`${fmt(s.fromColumn)} from Order Create Date, read as ${how}`);
+    }
+    if (s.none > 0) parts.push(`${fmt(s.none)} with no usable date`);
+
+    // A mismatch means the Order ID and the date column disagree on the day —
+    // strong evidence the column has been corrupted by Sheets. The ID wins, so
+    // the numbers stay right, but it's worth surfacing.
+    const warn = s.mismatch > 0 || s.none > 0 || (s.fromColumn > 0 && (i.conflict || i.basis === "assumed"));
+    let text = parts.join(" · ") || "no rows";
+    if (s.mismatch > 0) {
+      text += ` — ${fmt(s.mismatch)} row(s) where the date column disagrees with the Order ID (Order ID used; the column is likely corrupted)`;
+    }
+    return { warn, text };
+  }, [rows]);
+
   return (
     <div style={{ background: "#FAFAFB", minHeight: "100vh", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", color: C.ink, padding: "20px clamp(12px,3vw,28px)" }}>
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
@@ -1572,9 +1807,9 @@ function Dashboard() {
         {/* Filters top-right: date range + operator */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={selStyle} />
+            <input type="date" value={from} max={todayISO} onChange={(e) => setFrom(e.target.value)} style={selStyle} />
             <span style={{ color: C.sub, fontSize: 12 }}>→</span>
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={selStyle} />
+            <input type="date" value={to} max={todayISO} onChange={(e) => setTo(e.target.value)} style={selStyle} />
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             <Pill active={op === "all"} onClick={() => setOp("all")}>All operators</Pill>
@@ -1787,6 +2022,9 @@ function Dashboard() {
 
         <div style={{ textAlign: "center", color: C.sub, fontSize: 11, padding: "8px 0 24px" }}>
           Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"} · {result === "successful" ? "Successful orders only" : "All order results"}{gbrand !== "all" ? ` · Brand: ${(brandList.find(b=>b.key===gbrand)||{}).label || gbrand}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}
+          <div style={{ marginTop: 4, color: dateFmtNote.warn ? C.red : C.sub }}>
+            Order dates: {dateFmtNote.text}
+          </div>
         </div>
       </div>
     </div>
