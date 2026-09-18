@@ -718,8 +718,17 @@ function Stat({ label, value, color }) {
 }
 
 /* ============================ Widget 5: Performance ============================ */
+// Stack order is bottom -> top; colours run deep purple -> light blue (cold tones).
+const PERF_CATS = [
+  { id: "device",      label: "Device",      color: "#4C1D95" },
+  { id: "postpaid",    label: "Postpaid",    color: "#7C3AED" },
+  { id: "prepaid",     label: "Prepaid",     color: "#6366F1" },
+  { id: "iot",         label: "IOT",         color: "#3B82F6" },
+  { id: "accessories", label: "Accessories", color: "#7DD3FC" },
+];
 function W5Performance({ rows, metric }) {
   const [period, setPeriod] = useState("WoW");
+  const [hoverKey, setHoverKey] = useState(null);
   const periods = ["DoD", "WoW", "MoM", "QoQ"];
   const { bars, change } = useMemo(() => {
     const val = (r) => metric === "orders" ? 1 : metric === "units" ? r.q : r.p;
@@ -730,8 +739,15 @@ function W5Performance({ rows, metric }) {
       if (period === "MoM") return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
       const q = Math.floor(d.getMonth() / 3) + 1; return `${d.getFullYear()} Q${q}`;
     };
-    rows.forEach((r) => { const d = parseDate(r.d); if (!d) return; const k = keyOf(d); buckets[k] = (buckets[k] || 0) + val(r); });
-    const arr = Object.entries(buckets).map(([k, v]) => ({ name: k, value: v })).sort((a, b) => a.name.localeCompare(b.name));
+    rows.forEach((r) => {
+      const d = parseDate(r.d); if (!d) return;
+      const k = keyOf(d);
+      if (!buckets[k]) { buckets[k] = { name: k, value: 0 }; PERF_CATS.forEach((c) => { buckets[k][c.id] = 0; }); }
+      const v = val(r);
+      buckets[k][classifyRow(r)] += v;
+      buckets[k].value += v;
+    });
+    const arr = Object.values(buckets).sort((a, b) => a.name.localeCompare(b.name));
     // per-bar % diff vs previous bar
     arr.forEach((b, i) => {
       if (i === 0) { b.pct = null; }
@@ -747,14 +763,36 @@ function W5Performance({ rows, metric }) {
 
   const showLine = period !== "DoD";
   const pctLabel = (props) => {
-    const { x, y, width, index } = props;
+    const { x, y, index } = props;
     const b = bars[index];
-    if (!showLine || b.pct === null || b.pct === undefined) return null;
+    if (!b || b.pct === null || b.pct === undefined) return null;
     const up = b.pct >= 0;
     return (
-      <text x={x + width / 2} y={y - 8} textAnchor="middle" fontSize={11} fontWeight={700} fill={up ? C.green : C.red}>
+      <text x={x} y={y - 10} textAnchor="middle" fontSize={11} fontWeight={700} fill={up ? C.green : C.red}>
         {up ? "+" : "−"}{Math.abs(b.pct).toFixed(1)}%
       </text>
+    );
+  };
+
+  // Tooltip shows only the stacked segment under the pointer: its count and share of that bar's total.
+  const perfTip = ({ active, payload, label }) => {
+    if (!active || !payload || !payload.length || !hoverKey) return null;
+    const row = payload[0].payload;
+    const cat = PERF_CATS.find((c) => c.id === hoverKey);
+    if (!row || !cat) return null;
+    const v = row[cat.id] || 0;
+    const share = row.value ? (v / row.value) * 100 : 0;
+    return (
+      <div style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, boxShadow: "0 4px 12px rgba(30,27,75,0.10)" }}>
+        <div style={{ color: C.sub, marginBottom: 4 }}>{label}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, color: C.ink }}>
+          <span style={{ width: 10, height: 10, borderRadius: 2, background: cat.color }} />{cat.label}
+        </div>
+        <div style={{ marginTop: 2, color: C.ink }}>
+          {METRICS[metric].fmt(v)} <span style={{ color: cat.color === "#7DD3FC" ? "#0284C7" : cat.color, fontWeight: 700 }}>({share.toFixed(1)}%)</span>
+        </div>
+        <div style={{ color: C.sub, marginTop: 2 }}>of {METRICS[metric].fmt(row.value)} total</div>
+      </div>
     );
   };
 
@@ -768,14 +806,26 @@ function W5Performance({ rows, metric }) {
           <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 10, fill: C.sub }} axisLine={{ stroke: C.line }} tickLine={false} />
           <YAxis tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? (v/1000) + "k" : v} />
-          <Tooltip contentStyle={{ borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12 }}
-            formatter={(v, n) => n === "value" ? [METRICS[metric].fmt(v), METRICS[metric].label] : null} />
-          <Bar dataKey="value" fill={C.dtac} radius={[3, 3, 0, 0]}>
-            <LabelList content={pctLabel} />
-          </Bar>
-          {showLine && <Line type="linear" dataKey="value" stroke={C.grey} strokeWidth={2} dot={{ r: 3, fill: C.grey }} isAnimationActive={false} legendType="none" />}
+          <Tooltip content={perfTip} cursor={{ fill: "rgba(99,102,241,0.06)" }} />
+          {PERF_CATS.map((c, i) => (
+            <Bar key={c.id} dataKey={c.id} stackId="perf" fill={c.color}
+              radius={i === PERF_CATS.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
+              onMouseEnter={() => setHoverKey(c.id)} onMouseLeave={() => setHoverKey(null)} />
+          ))}
+          {showLine && (
+            <Line type="linear" dataKey="value" stroke={C.grey} strokeWidth={2} dot={{ r: 3, fill: C.grey }} activeDot={false} isAnimationActive={false} legendType="none">
+              <LabelList content={pctLabel} />
+            </Line>
+          )}
         </ComposedChart>
       </ResponsiveContainer>
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "4px 14px", marginTop: 6 }}>
+        {PERF_CATS.map((c) => (
+          <span key={c.id} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: C.sub }}>
+            <span style={{ width: 10, height: 10, borderRadius: 2, background: c.color }} />{c.label}
+          </span>
+        ))}
+      </div>
       {change && (
         <div style={{ marginTop: 10, textAlign: "center", fontSize: 13 }}>
           <span style={{ color: C.sub }}>latest vs previous {period === "DoD" ? "day" : period === "WoW" ? "week" : period === "MoM" ? "month" : "quarter"}: </span>
