@@ -2,9 +2,10 @@
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>VC - Ecommerce Sales & Fulfillment Dashboard</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #FAFAFB; }
+  html, body { margin: 0; padding: 0; background: #F4F6F9; -webkit-font-smoothing: antialiased; }
+  ::selection { background: rgba(0,114,206,.18); }
   * { box-sizing: border-box; }
-  #loading, #errbox { font-family: system-ui, sans-serif; color: #6B7280; padding: 40px 24px; }
+  #loading, #errbox { font-family: 'Inter','IBM Plex Sans Thai',system-ui, sans-serif; color: #6B7280; padding: 40px 24px; }
   #loading { text-align: center; } #loading h2 { color: #1A1A1A; font-weight: 800; margin-bottom: 6px; }
   #errbox { display:none; } #errbox h2 { color: #DC2626; }
   #errbox pre { background:#FEF2F2; border:1px solid #FECACA; color:#991B1B; padding:14px; border-radius:8px; overflow:auto; white-space:pre-wrap; font-size:12px; }
@@ -25,6 +26,8 @@
     .grid-kpi { grid-template-columns: 1fr !important; }
   }
 </style>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/prop-types@15/prop-types.min.js"></script>
@@ -47,7 +50,7 @@
 <script type="text/babel" data-presets="react">
 try {
   const { useState, useMemo } = React;
-  const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, Sector, ComposedChart, Line, LabelList } = Recharts;
+  const { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, Sector, ComposedChart, Line, LabelList, DefaultTooltipContent } = Recharts;
   const COORDS = window.COORDS;
   const RAW = window.RAW;
 
@@ -316,7 +319,7 @@ const C = {
   dtac: "#0072CE",   // dtac = blue
   ink: "#1A1A1A",
   sub: "#6B7280",
-  line: "#E8E8EA",
+  line: "#E6E8EE",
   bg: "#FFFFFF",
   panel: "#FFFFFF",
   soft: "#F7F7F8",
@@ -327,6 +330,69 @@ const C = {
   blue: "#2563EB",
   grey: "#9CA3AF",
 };
+/* ============================ Gradient system ============================
+   Every chart colour gets a same-hue gradient (full colour → soft tint).
+   One hidden <svg> holds all <linearGradient> defs; charts reference them via
+   url(#g{dir}_{HEX}). Tooltips/legends map the url back to the plain hex. */
+const BRAND_GRAD = "linear-gradient(135deg, #E2231A 0%, #0072CE 100%)";
+const GRAD_HEX = ["#000000", "#0072CE", "#0284C7", "#06B6D4", "#0A79FF", "#0D9488", "#0EA5E9", "#0F766E", "#0FA968", "#124191", "#1428A0", "#14B8A6", "#15803D", "#16A34A", "#1A1A1A", "#1BA784", "#1D4ED8", "#2563EB", "#2DD4BF", "#38BDF8", "#3B82F6", "#415FFF", "#4285F4", "#4C1D95", "#555555", "#5A38F1", "#5EEAD4", "#60A5FA", "#6366F1", "#64748B", "#6B7280", "#7C3AED", "#7DD3FC", "#7F1D1D", "#818CF8", "#84CC16", "#8B5CF6", "#991B1B", "#99F6E4", "#9CA3AF", "#9F1239", "#A50034", "#A5B4FC", "#A855F7", "#B91C1C", "#BD0026", "#BE123C", "#C026D3", "#D1D5DB", "#DC2626", "#E2231A", "#E5E7EB", "#E60012", "#E8E8EA", "#EAB308", "#EAF2FB", "#EB6100", "#EC4899", "#EEF1F5", "#EF4444", "#F03B20", "#F43F5E", "#F5010C", "#F59E0B", "#F7F7F8", "#F87171", "#F97316", "#FAFAFB", "#FB7185", "#FCA5A5", "#FDA4AF", "#FEB24C", "#FECACA", "#FEF2F2", "#FF0000", "#FF6900", "#FFC900", "#FFEDA0", "#FFFFFF"];
+const GRAD_SET = new Set(GRAD_HEX);
+function mixHex(hex, target, amt) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const t = target === "white" ? 255 : 0;
+  const m = (c) => Math.round(c + (t - c) * amt).toString(16).padStart(2, "0");
+  return "#" + m(r) + m(g) + m(b);
+}
+const tint = (hex, amt) => mixHex(hex, "white", amt);
+const shade = (hex, amt) => mixHex(hex, "black", amt);
+// dir: "v" vertical bars (top strong → bottom soft), "h" horizontal bars/lines, "d" diagonal (pies, rings, dots)
+function gfill(color, dir) {
+  if (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color)) return color;
+  const hx = color.toUpperCase();
+  return GRAD_SET.has(hx) ? `url(#g${dir || "v"}_${hx.slice(1)})` : color;
+}
+function ungrad(c) {
+  const m = typeof c === "string" && c.match(/^url\(#g[vhd]_([0-9A-F]{6})\)$/);
+  return m ? "#" + m[1] : c;
+}
+// CSS version for HTML swatches / chips
+const cssGrad = (hex, deg) => (typeof hex === "string" && /^#[0-9a-fA-F]{6}$/.test(hex))
+  ? `linear-gradient(${deg || 160}deg, ${hex} 0%, ${tint(hex, 0.45)} 100%)` : hex;
+function GradientDefs() {
+  return (
+    <svg width="0" height="0" aria-hidden="true" focusable="false" style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}>
+      <defs>
+        <radialGradient id="g_glow" cx="35%" cy="32%" r="70%">
+          <stop offset="0%" stopColor="#fff" stopOpacity="0.6" /><stop offset="100%" stopColor="#fff" stopOpacity="0" />
+        </radialGradient>
+        {GRAD_HEX.map((hx) => {
+          const id = hx.slice(1);
+          return (
+            <React.Fragment key={hx}>
+              <linearGradient id={`gv_${id}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={hx} /><stop offset="100%" stopColor={tint(hx, 0.5)} />
+              </linearGradient>
+              <linearGradient id={`gh_${id}`} x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor={tint(hx, 0.45)} /><stop offset="100%" stopColor={hx} />
+              </linearGradient>
+              <linearGradient id={`gd_${id}`} x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stopColor={tint(hx, 0.4)} /><stop offset="55%" stopColor={hx} /><stop offset="100%" stopColor={shade(hx, 0.12)} />
+              </linearGradient>
+            </React.Fragment>
+          );
+        })}
+      </defs>
+    </svg>
+  );
+}
+// Default Recharts tooltip, but with gradient urls mapped back to their hex colour
+const gradTip = !DefaultTooltipContent ? undefined : (props) => (
+  <DefaultTooltipContent {...props}
+    payload={(props.payload || []).map((p) => ({ ...p, color: ungrad(p.color) }))} />
+);
+const TIP_STYLE = { borderRadius: 10, border: "1px solid #E6E8EE", fontSize: 12, boxShadow: "0 10px 28px -12px rgba(16,24,40,.28)" };
+
 const DONUT = ["#0072CE", "#F59E0B", "#16A34A", "#8B5CF6", "#EC4899",
   "#14B8A6", "#F97316", "#6366F1", "#84CC16", "#EAB308", "#06B6D4", "#A855F7", "#64748B"];
 
@@ -587,12 +653,14 @@ const TABS = [
 /* ============================ Card shell ============================ */
 function Card({ title, right, children, style }) {
   return (
-    <div style={{
-      background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14,
-      padding: "16px 18px", display: "flex", flexDirection: "column", minWidth: 0, ...style,
+    <div className="vc-card" style={{
+      border: "1.5px solid transparent", borderRadius: 16,
+      background: `linear-gradient(#fff, #fff) padding-box, ${BRAND_GRAD} border-box`,
+      boxShadow: "0 1px 2px rgba(16,24,40,.04), 0 12px 28px -18px rgba(16,24,40,.22)",
+      padding: "18px 20px", display: "flex", flexDirection: "column", minWidth: 0, ...style,
     }}>
-      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8 }}>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.ink, letterSpacing: "-0.01em" }}>{title}</h3>
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 14.5, fontWeight: 700, color: C.ink, letterSpacing: "-0.01em" }}>{title}</h3>
         {right}
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
@@ -641,15 +709,15 @@ function Donut({ data, colors }) {
             innerRadius={52} outerRadius={78} paddingAngle={1}
             activeIndex={idx >= 0 ? idx : undefined} activeShape={renderActive}
             onMouseEnter={(_, i) => setIdx(i)} onMouseLeave={() => setIdx(-1)}>
-            {dataWithColor.map((d, i) => <Cell key={i} fill={col(i)} />)}
+            {dataWithColor.map((d, i) => <Cell key={i} fill={gfill(col(i), "d")} />)}
           </Pie>
           <Tooltip content={({ active, payload }) => {
             if (!active || !payload || !payload.length) return null;
             const p = payload[0]; const v = p.value;
             return (
-              <div style={{ background: "#fff", borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12, padding: "8px 10px", boxShadow: "0 4px 14px rgba(0,0,0,.08)" }}>
+              <div style={{ ...TIP_STYLE, background: "#fff", padding: "8px 10px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                  <span style={{ width: 9, height: 9, borderRadius: 2, background: p.payload.fill || p.color }} />
+                  <span style={{ width: 9, height: 9, borderRadius: 2, background: cssGrad(p.payload.fill || ungrad(p.color)) }} />
                   <span style={{ color: C.ink, fontWeight: 600 }}>{p.name}</span>
                 </div>
                 <div style={{ color: C.sub }}>{fmt(v)} · {((v/total)*100).toFixed(1)}%</div>
@@ -661,7 +729,7 @@ function Donut({ data, colors }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", marginTop: 6, maxHeight: 64, overflow: "auto" }}>
         {data.map((d, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: C.sub }}>
-            <span style={{ width: 9, height: 9, borderRadius: 2, background: col(i) }} />
+            <span style={{ width: 9, height: 9, borderRadius: 3, background: cssGrad(col(i)) }} />
             <span style={{ color: C.ink, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name}</span>
             <span>{((d.value/total)*100).toFixed(0)}%</span>
           </div>
@@ -693,11 +761,11 @@ function W1OrderTotal({ rows, metric }) {
           <CartesianGrid strokeDasharray="3 3" stroke={C.line} horizontal={false} />
           <XAxis type="number" tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? (v/1000) + "k" : v} />
           <YAxis type="category" dataKey="label" hide />
-          <Tooltip contentStyle={{ borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12 }}
+          <Tooltip content={gradTip} contentStyle={TIP_STYLE} cursor={{ fill: "rgba(99,102,241,0.05)" }}
             formatter={(v, n) => [METRICS[metric].fmt(v), n === "true" ? "True" : "dtac"]} />
-          <Legend formatter={(v) => v === "true" ? "True" : "dtac"} iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-          <Bar dataKey="true" stackId="a" fill={C.true} name="true" radius={[4, 0, 0, 4]} barSize={64} />
-          <Bar dataKey="dtac" stackId="a" fill={C.dtac} name="dtac" radius={[0, 4, 4, 0]} barSize={64} />
+          <Legend formatter={(v) => <span style={{ color: v === "true" ? C.true : C.dtac, fontWeight: 600 }}>{v === "true" ? "True" : "dtac"}</span>} iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+          <Bar dataKey="true" stackId="a" fill={gfill(C.true, "h")} name="true" radius={[8, 0, 0, 8]} barSize={64} />
+          <Bar dataKey="dtac" stackId="a" fill={gfill(C.dtac, "h")} name="dtac" radius={[0, 8, 8, 0]} barSize={64} />
         </BarChart>
       </ResponsiveContainer>
       <div style={{ display: "flex", justifyContent: "center", gap: 28, marginTop: 4 }}>
@@ -783,10 +851,10 @@ function W5Performance({ rows, metric }) {
     const v = row[cat.id] || 0;
     const share = row.value ? (v / row.value) * 100 : 0;
     return (
-      <div style={{ background: "#fff", border: `1px solid ${C.line}`, borderRadius: 8, padding: "8px 10px", fontSize: 12, boxShadow: "0 4px 12px rgba(30,27,75,0.10)" }}>
+      <div style={{ ...TIP_STYLE, background: "#fff", padding: "8px 10px" }}>
         <div style={{ color: C.sub, marginBottom: 4 }}>{label}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, color: C.ink }}>
-          <span style={{ width: 10, height: 10, borderRadius: 2, background: cat.color }} />{cat.label}
+          <span style={{ width: 10, height: 10, borderRadius: 3, background: cssGrad(cat.color) }} />{cat.label}
         </div>
         <div style={{ marginTop: 2, color: C.ink }}>
           {METRICS[metric].fmt(v)} <span style={{ color: cat.color === "#7DD3FC" ? "#0284C7" : cat.color, fontWeight: 700 }}>({share.toFixed(1)}%)</span>
@@ -806,14 +874,14 @@ function W5Performance({ rows, metric }) {
           <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
           <XAxis dataKey="name" tick={{ fontSize: 10, fill: C.sub }} axisLine={{ stroke: C.line }} tickLine={false} />
           <YAxis tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? (v/1000) + "k" : v} />
-          <Tooltip content={perfTip} cursor={{ fill: "rgba(99,102,241,0.06)" }} />
+          <Tooltip content={perfTip} cursor={{ fill: "rgba(99,102,241,0.05)" }} />
           {PERF_CATS.map((c, i) => (
-            <Bar key={c.id} dataKey={c.id} stackId="perf" fill={c.color}
-              radius={i === PERF_CATS.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]}
+            <Bar key={c.id} dataKey={c.id} stackId="perf" fill={gfill(c.color, "v")}
+              radius={i === PERF_CATS.length - 1 ? [5, 5, 0, 0] : [0, 0, 0, 0]}
               onMouseEnter={() => setHoverKey(c.id)} onMouseLeave={() => setHoverKey(null)} />
           ))}
           {showLine && (
-            <Line type="linear" dataKey="value" stroke={C.grey} strokeWidth={2} dot={{ r: 3, fill: C.grey }} activeDot={false} isAnimationActive={false} legendType="none">
+            <Line type="linear" dataKey="value" stroke={gfill(C.grey, "h")} strokeWidth={2} dot={{ r: 3, fill: gfill(C.grey, "d"), stroke: "#fff", strokeWidth: 1 }} activeDot={false} isAnimationActive={false} legendType="none">
               <LabelList content={pctLabel} />
             </Line>
           )}
@@ -822,7 +890,7 @@ function W5Performance({ rows, metric }) {
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "4px 14px", marginTop: 6 }}>
         {PERF_CATS.map((c) => (
           <span key={c.id} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: C.sub }}>
-            <span style={{ width: 10, height: 10, borderRadius: 2, background: c.color }} />{c.label}
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: cssGrad(c.color) }} />{c.label}
           </span>
         ))}
       </div>
@@ -957,13 +1025,13 @@ function PeriodBar({ rows, denomRows, color, label, metric }) {
           <XAxis dataKey="name" tick={{ fontSize: 10, fill: C.sub }} axisLine={{ stroke: C.line }} tickLine={false} />
           <YAxis tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false}
             tickFormatter={(v) => view === "percent" ? v.toFixed(0) + "%" : (v >= 1000 ? (v/1000) + "k" : v)} />
-          <Tooltip contentStyle={{ borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12 }} formatter={tooltipFormatter} />
+          <Tooltip content={gradTip} contentStyle={TIP_STYLE} cursor={{ fill: "rgba(99,102,241,0.05)" }} formatter={tooltipFormatter} />
           {view === "amount" ? (
-            <Bar dataKey="value" fill={color} radius={[3, 3, 0, 0]}>
+            <Bar dataKey="value" fill={gfill(color, "v")} radius={[5, 5, 0, 0]}>
               <LabelList content={pctLabel} />
             </Bar>
           ) : (
-            <Line type="monotone" dataKey="pct" stroke={color} strokeWidth={2} dot={{ r: 3, fill: color }} isAnimationActive={false} connectNulls />
+            <Line type="monotone" dataKey="pct" stroke={gfill(color, "h")} strokeWidth={2.5} dot={{ r: 3.5, fill: gfill(color, "d"), stroke: "#fff", strokeWidth: 1 }} isAnimationActive={false} connectNulls />
           )}
         </ComposedChart>
       </ResponsiveContainer>
@@ -1211,6 +1279,7 @@ function W7Heatmap({ rows, coords }) {
                 <circle cx={x} cy={y} r={rad} fill={heatColor(t)} fillOpacity={0.78} stroke="#fff" strokeWidth={0.6}>
                   <title>{s.name}: {fmt(s.count)} orders · {fmtMoney(s.pay)}</title>
                 </circle>
+                <circle cx={x} cy={y} r={rad} fill="url(#g_glow)" style={{ pointerEvents: "none" }} />
               </g>
             );
           })}
@@ -1430,7 +1499,7 @@ function W_AvgDayToCustomer({ rows }) {
         <svg width="232" height="232" viewBox="0 0 232 232">
           <circle cx={CX} cy={CY} r={R} fill="none" stroke="#EEF1F5" strokeWidth={SW} />
           {segs.map((s, i) => s.dash > 0 && (
-            <circle key={i} cx={CX} cy={CY} r={R} fill="none" stroke={s.color} strokeWidth={SW}
+            <circle key={i} cx={CX} cy={CY} r={R} fill="none" stroke={gfill(s.color, "d")} strokeWidth={SW}
               strokeDasharray={`${s.dash} ${CIRC - s.dash}`} strokeDashoffset={-s.off}
               transform={`rotate(-90 ${CX} ${CY})`} />
           ))}
@@ -1444,7 +1513,7 @@ function W_AvgDayToCustomer({ rows }) {
       <div style={{ flex: 1, minWidth: 170 }}>
         {segs.map((s) => (
           <div key={s.key} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 0", borderBottom: `1px solid ${C.soft}` }}>
-            <span style={{ width: 10, height: 10, borderRadius: 3, background: s.color }} />
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: cssGrad(s.color) }} />
             <span style={{ fontSize: 13, color: C.ink, flex: 1 }}>{s.label}</span>
             <span style={{ fontSize: 13, fontWeight: 700, color: C.ink }}>{fmt(s.count)}</span>
             <span style={{ fontSize: 12, color: C.sub, width: 40, textAlign: "right" }}>{total ? Math.round(s.frac * 100) : 0}%</span>
@@ -1495,13 +1564,13 @@ function W_DayToCustomerTrend({ rows }) {
             <CartesianGrid strokeDasharray="3 3" stroke={C.line} vertical={false} />
             <XAxis dataKey="name" tick={{ fontSize: 10, fill: C.sub }} axisLine={{ stroke: C.line }} tickLine={false} />
             <YAxis tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false} allowDecimals={false} />
-            <Tooltip contentStyle={{ borderRadius: 8, border: `1px solid ${C.line}`, fontSize: 12 }}
+            <Tooltip content={gradTip} contentStyle={TIP_STYLE} cursor={{ fill: "rgba(99,102,241,0.05)" }}
               formatter={(v, n) => { const b = TDC_BUCKETS.find((x) => x.key === n); return [fmt(v), b ? b.label : n]; }}
               labelFormatter={(lab) => { const b = bars.find((x) => x.name === lab); return b ? `${lab}  ·  avg ${b.avg.toFixed(2)} d` : lab; }} />
-            <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} formatter={(n) => { const b = TDC_BUCKETS.find((x) => x.key === n); return b ? b.label : n; }} />
+            <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} formatter={(n) => { const b = TDC_BUCKETS.find((x) => x.key === n); return <span style={{ color: b ? b.color : C.sub, fontWeight: 600 }}>{b ? b.label : n}</span>; }} />
             {TDC_BUCKETS.map((b, i) => (
-              <Bar key={b.key} dataKey={b.key} stackId="a" fill={b.color} name={b.key}
-                radius={i === TDC_BUCKETS.length - 1 ? [3, 3, 0, 0] : [0, 0, 0, 0]} maxBarSize={54} />
+              <Bar key={b.key} dataKey={b.key} stackId="a" fill={gfill(b.color, "v")} name={b.key}
+                radius={i === TDC_BUCKETS.length - 1 ? [5, 5, 0, 0] : [0, 0, 0, 0]} maxBarSize={54} />
             ))}
           </BarChart>
         </ResponsiveContainer>
@@ -1822,17 +1891,19 @@ function Dashboard() {
   }, [rows]);
 
   return (
-    <div style={{ background: "#FAFAFB", minHeight: "100vh", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", color: C.ink, padding: "20px clamp(12px,3vw,28px)" }}>
+    <div style={{ background: "#F4F6F9", minHeight: "100vh", fontFamily: "'Inter','IBM Plex Sans Thai',system-ui,-apple-system,sans-serif", color: C.ink, padding: "20px clamp(12px,3vw,28px)" }}>
+      <GradientDefs />
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
 
         {/* ===== Frozen top section: header, upload, controls, tabs ===== */}
-        <div style={{ position: "sticky", top: 0, zIndex: 40, background: "#FAFAFB", paddingTop: 4, marginLeft: "calc(-1 * clamp(12px,3vw,28px))", marginRight: "calc(-1 * clamp(12px,3vw,28px))", paddingLeft: "clamp(12px,3vw,28px)", paddingRight: "clamp(12px,3vw,28px)", boxShadow: "0 6px 12px -8px rgba(0,0,0,0.12)" }}>
+        <div style={{ position: "sticky", top: 0, zIndex: 40, background: "rgba(244,246,249,0.92)", backdropFilter: "saturate(1.4) blur(10px)", WebkitBackdropFilter: "saturate(1.4) blur(10px)", paddingTop: 4, marginLeft: "calc(-1 * clamp(12px,3vw,28px))", marginRight: "calc(-1 * clamp(12px,3vw,28px))", paddingLeft: "clamp(12px,3vw,28px)", paddingRight: "clamp(12px,3vw,28px)", boxShadow: "0 8px 16px -12px rgba(16,24,40,0.18)" }}>
 
         {/* Header — title always stays visible; collapse toggle sits beside it */}
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: topOpen ? 16 : 8, paddingTop: 4 }}>
           <div>
             <div style={{ fontSize: 11, letterSpacing: ".14em", textTransform: "uppercase", color: C.sub, fontWeight: 600 }}>VC · Ecommerce</div>
             <h1 style={{ margin: "2px 0 0", fontSize: "clamp(19px, 5.5vw, 26px)", fontWeight: 800, letterSpacing: "-0.02em" }}>VC - Ecommerce Sales & Fulfillment Dashboard</h1>
+            <div style={{ width: 64, height: 3, borderRadius: 3, background: BRAND_GRAD, marginTop: 8 }} />
             {updated && <div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>Updated: <span style={{ color: C.ink, fontWeight: 600 }}>{updated}</span></div>}
           </div>
           <button onClick={() => setTopOpen((o) => !o)} style={{
@@ -1869,7 +1940,7 @@ function Dashboard() {
         </div>
 
         {/* Upload / data-source bar */}
-        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#fff", border: `1px dashed ${C.line}`, borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, background: "#fff", border: `1px dashed #CBD2DC`, borderRadius: 14, padding: "12px 14px", marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
             <span style={{ fontSize: 20 }}>📄</span>
             <div style={{ minWidth: 0 }}>
@@ -1911,7 +1982,7 @@ function Dashboard() {
         )}
 
         {/* Control bar */}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 12, padding: "10px 14px", marginBottom: 16 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", background: "#fff", border: `1px solid ${C.line}`, borderRadius: 14, padding: "10px 14px", marginBottom: 16, boxShadow: "0 1px 2px rgba(16,24,40,.04)" }}>
           <ControlGroup label="Measure">
             {Object.entries(METRICS).map(([k, v]) => <Pill key={k} active={metric === k} onClick={() => setMetric(k)}>{v.label}</Pill>)}
           </ControlGroup>
@@ -1994,7 +2065,8 @@ function Dashboard() {
             <button key={t.id} onClick={() => setTab(t.id)} style={{
               border: "none", background: "none", padding: "10px 16px", fontSize: 14, fontWeight: 600,
               color: tab === t.id ? C.ink : C.sub, cursor: "pointer", position: "relative",
-              borderBottom: tab === t.id ? `2px solid ${C.true}` : "2px solid transparent", marginBottom: -1,
+              borderBottom: "2px solid transparent", marginBottom: -1,
+              ...(tab === t.id ? { borderImage: `${BRAND_GRAD} 1` } : {}), transition: "color .15s",
             }}>{t.label}</button>
           ))}
         </div>
@@ -2092,9 +2164,14 @@ function ControlGroup({ label, children }) {
 function Divider() { return <div style={{ width: 1, height: 24, background: C.line }} />; }
 function Kpi({ label, value, active, sub }) {
   return (
-    <div style={{ background: "#fff", border: `1px solid ${active ? C.ink : C.line}`, borderRadius: 12, padding: "14px 18px" }}>
-      <div style={{ fontSize: 11, color: C.sub, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</div>
-      <div style={{ fontSize: 24, fontWeight: 800, marginTop: 4, letterSpacing: "-0.02em" }}>{value}</div>
+    <div style={{
+      border: `${active ? 2 : 1.5}px solid transparent`, borderRadius: 16, padding: "16px 20px",
+      background: `linear-gradient(${active ? "135deg, #FFF5F5, #F2F8FF" : "#fff, #fff"}) padding-box, ${BRAND_GRAD} border-box`,
+      boxShadow: active ? "0 14px 30px -18px rgba(0,114,206,.45)" : "0 1px 2px rgba(16,24,40,.04), 0 12px 28px -18px rgba(16,24,40,.22)",
+      transition: "box-shadow .2s, background .2s",
+    }}>
+      <div style={{ fontSize: 12, color: C.sub, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 800, marginTop: 4, letterSpacing: "-0.025em", fontVariantNumeric: "tabular-nums" }}>{value}</div>
       {sub && <div style={{ fontSize: 11, color: C.sub, marginTop: 3 }}>{sub}</div>}
     </div>
   );
@@ -2146,8 +2223,8 @@ function PasswordGate({ children }) {
   if (unlocked) return children;
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#FAFAFB", fontFamily: "'Inter',system-ui,-apple-system,sans-serif", padding: 20 }}>
-      <form onSubmit={submit} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: "32px 28px", width: "100%", maxWidth: 320, boxShadow: "0 12px 32px rgba(0,0,0,0.08)" }}>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F4F6F9", fontFamily: "'Inter','IBM Plex Sans Thai',system-ui,-apple-system,sans-serif", padding: 20 }}>
+      <form onSubmit={submit} style={{ background: `linear-gradient(#fff, #fff) padding-box, ${BRAND_GRAD} border-box`, border: "1.5px solid transparent", borderRadius: 18, padding: "32px 28px", width: "100%", maxWidth: 320, boxShadow: "0 12px 32px rgba(0,0,0,0.08)" }}>
         <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: ".08em", textTransform: "uppercase", color: "#6B7280", marginBottom: 4 }}>VC · Ecommerce</div>
         <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 800, color: "#1A1A1A" }}>Dashboard access</h2>
         <input
