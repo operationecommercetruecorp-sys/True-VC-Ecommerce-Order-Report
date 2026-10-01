@@ -1725,6 +1725,26 @@ function Dashboard() {
   const [op, setOp] = useState("all"); // all | TRUE | DTAC
   const [simType, setSimType] = useState("all"); // all | esim | physical — Postpaid & Prepaid tabs only
   const [pgroup, setPgroup] = useState("all");   // all | travel | tourist | other — Prepaid tab only
+
+  // eSIM orders are never shipped (Delivery Type is always "Pickup at shop/ No
+  // delivery"), so the default "Normal delivery" filter would hide every one of
+  // them. Entering Postpaid/Prepaid switches Delivery to "All"; leaving for any
+  // other tab restores whatever Delivery was set to before. Moving between
+  // Postpaid and Prepaid keeps the user's current choice. Delivery can still be
+  // changed manually on any tab.
+  const prevTabRef = React.useRef(tab);
+  const savedDeliveryRef = React.useRef(null);
+  React.useEffect(() => {
+    const wasSim = isSimTabId(prevTabRef.current), isSim = isSimTabId(tab);
+    if (!wasSim && isSim) {
+      savedDeliveryRef.current = delivery;
+      setDelivery("all");
+    } else if (wasSim && !isSim && savedDeliveryRef.current !== null) {
+      setDelivery(savedDeliveryRef.current);
+      savedDeliveryRef.current = null;
+    }
+    prevTabRef.current = tab;
+  }, [tab]);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [tdcZones, setTdcZones] = useState(new Set(["BKK+Greater Zone", "Upcountry zone"]));
