@@ -58,7 +58,7 @@ try {
 // Remove Name", trimmed layout) as of this build. If columns are added/removed/
 // reordered in the sheet, update this list to match so the downloadable
 // template stays a reliable manual-upload starting point.
-const TEMPLATE_HEADERS = ["No.","Order Create Date","Order ID","Order operator","Order Type","Order Status","Payment Status","Order Workflow Status","Order Cancelled reason","Order Fulfillment Success/Failed reason","Product Type","Product Cat","Product Sub Cat","Brand Name","Product Name","Product Full Name","quantity","Current Package RC","New Package RC","New Proposition Name","Payment Date","Total Payment","Delivery Type","Delivery Shop Name","Delivery Shop Code","Shipping Status","Shipping Address Province","Dispatch Complete Date","Day to dispatch","Total day to customer"];
+const TEMPLATE_HEADERS = ["No.","Order Create Date","Order ID","Order operator","Order Type","Order Status","Payment Status","Order Workflow Status","Order Cancelled reason","Order Fulfillment Success/Failed reason","Product Type","Product Cat","Product Sub Cat","Brand Name","Matcode","Product Name","Product Full Name","quantity","Current Package RC","New Package RC","New Proposition Name","Payment Date","Total Payment","Delivery Type","Delivery Shop Name","Delivery Shop Code","Shipping Status","Shipping Address Province","Dispatch Complete Date","Day to dispatch","Total day to customer"];
 
 /* ============================ Data cleaning (ported from prep) ============================
    Maps a raw row (object keyed by the report's CSV/XLSX headers) into the compact
@@ -116,8 +116,9 @@ function brandKey(raw) {
 // ===== Row classification (replaces the old separate device/postpaid/prepaid/
 // iot/accessories checks) — every row gets exactly one category, decided by
 // these rules in order (first match wins):
-//   1. Order Type or Product Name mentions "post paid sim" / "postpaid sim" /
-//      "รายเดือน" (Thai for "monthly", i.e. postpaid)              -> postpaid
+//   1. Order Type contains "postpaid" (any casing, e.g. sim_only_postpaid,
+//      sim_only_mnp_postpaid), OR Order Type / Product Name mentions
+//      "post paid sim" / "postpaid sim" / "รายเดือน" (Thai for "monthly") -> postpaid
 //   2. Order Type or Product Name mentions "sim" / "ซิม" (Thai for SIM) -> prepaid
 //   3. Brand Name mentions "true"                                  -> iot
 //   4. Brand Name is one of the known device brands, UNLESS the
@@ -126,10 +127,15 @@ function brandKey(raw) {
 const DEVICE_BRANDS = ["apple", "samsung", "xiaomi", "oppo", "vivo", "huawei", "honor", "realme", "infinix", "nothing"];
 const ACCESSORY_PRODUCT_KEYWORDS = ["airpod", "charger", "case", "adaptor", "adapter"];
 function classifyRow(r) {
-  const combined = `${r.ot || ""} ${r.pn || ""}`.toLowerCase();
+  // pn0 = original Product Name. pn may have been swapped to the New Proposition
+  // Name for eSIM rows (see enrichSimFields), so classification always uses pn0
+  // to keep every row in the same tab it was in before the swap.
+  const pnOrig = r.pn0 !== undefined ? r.pn0 : r.pn;
+  const combined = `${r.ot || ""} ${pnOrig || ""}`.toLowerCase();
   const brLower = (r.br || "").toLowerCase();
 
-  if (combined.includes("post paid sim") || combined.includes("postpaid sim") || combined.includes("รายเดือน")) {
+  const otLower = (r.ot || "").toLowerCase();
+  if (otLower.includes("postpaid") || combined.includes("post paid sim") || combined.includes("postpaid sim") || combined.includes("รายเดือน")) {
     return "postpaid";
   }
   if (combined.includes("sim") || combined.includes("ซิม")) {
@@ -139,12 +145,62 @@ function classifyRow(r) {
     return "iot";
   }
   const isKnownDeviceBrand = DEVICE_BRANDS.some((b) => brLower.includes(b));
-  const isAccessoryProduct = ACCESSORY_PRODUCT_KEYWORDS.some((k) => (r.pn || "").toLowerCase().includes(k));
+  const isAccessoryProduct = ACCESSORY_PRODUCT_KEYWORDS.some((k) => (pnOrig || "").toLowerCase().includes(k));
   if (isKnownDeviceBrand && !isAccessoryProduct) {
     return "device";
   }
   return "accessories";
 }
+
+/* ===================== SIM type (eSIM / Physical) & prepaid grouping =====================
+   Applies to rows classifyRow() puts in the Postpaid or Prepaid tab.
+   - eSIM       : the word "esim" (any casing, also "e-sim") appears in the ORIGINAL
+                  Product Name OR in New Proposition Name. Matched as a word so
+                  e.g. "TrueSIM" is not mistaken for eSIM.
+   - Physical   : every other postpaid/prepaid row.
+   - Product Name swap: when the ORIGINAL Product Name contains "esim", the row's
+                  product name (pn) becomes its New Proposition Name, so SKU tables
+                  show the actual proposition. Blank/"-" proposition -> name kept.
+   - Prepaid group (from New Proposition Name, first match wins):
+       contains "travel"  -> travel   ("Travel SIM")
+       contains "tourist" -> tourist  ("Tourist SIM")
+       anything else      -> other    ("Other prepaid SIM") */
+const ESIM_RE = /(^|[^a-z])e-?sim/i;
+function hasEsim(s) { return ESIM_RE.test(String(s ?? "")); }
+function isBlankVal(s) {
+  const t = String(s ?? "").trim();
+  return !t || t === "-" || t.toLowerCase() === "nan" || t.toUpperCase() === "#N/A";
+}
+function prepaidGroup(prop) {
+  const s = String(prop ?? "").toLowerCase();
+  if (s.includes("travel")) return "travel";
+  if (s.includes("tourist")) return "tourist";
+  return "other";
+}
+function enrichSimFields(r) {
+  const pn0 = r.pn0 !== undefined ? r.pn0 : String(r.pn ?? "");   // idempotent
+  const prop = isBlankVal(r.prop) ? "" : String(r.prop).trim();
+  const row = { ...r, pn0, prop };
+  const cat = classifyRow(row);
+  const isSimTab = cat === "postpaid" || cat === "prepaid";
+  row.sim = isSimTab ? ((hasEsim(pn0) || hasEsim(prop)) ? "esim" : "physical") : "";
+  row.pg = cat === "prepaid" ? prepaidGroup(prop) : "";
+  row.pn = (isSimTab && hasEsim(pn0) && prop) ? prop : pn0;
+  return row;
+}
+const SIM_TYPES = [
+  { id: "esim",     label: "eSIM",         color: "#7C3AED" },
+  { id: "physical", label: "Physical SIM", color: "#0EA5E9" },
+];
+const PREPAID_GROUPS = [
+  { id: "travel",  label: "Travel SIM",        color: "#0D9488" },
+  { id: "tourist", label: "Tourist SIM",       color: "#F59E0B" },
+  { id: "other",   label: "Other prepaid SIM", color: "#64748B" },
+];
+const isSimTabId = (t) => t === "postpaid" || t === "prepaid";
+// Built-in data gets the same SIM fields as live/uploaded rows (defined here, after
+// the helpers above, so the consts they use are already initialised).
+const RAW_ROWS = (RAW || []).map((r) => enrichSimFields(r));
 
 /* ===================== Date order inference =====================
    A single value like "02/01/2026" is genuinely ambiguous: 2 January or
@@ -276,7 +332,7 @@ function cleanRows(rawRows) {
     const oid = pick(r, "Order ID");
     if (oid === undefined || String(oid).trim() === "") continue; // skip blank lines
     const opRaw = String(pick(r, "Order operator") ?? "").trim().toUpperCase();
-    out.push({
+    out.push(enrichSimFields({
       d: resolveRowDate(oid, pick(r, "Order Create Date")),
       op: opRaw === "TRUE" ? "TRUE" : "DTAC",
       ot: String(pick(r, "Order Type") ?? ""),
@@ -290,7 +346,8 @@ function cleanRows(rawRows) {
       p: toNum(pick(r, "Total Payment")),
       pn: String(pick(r, "Product Name") ?? ""),
       pfn: String(pick(r, "Product Full Name") ?? ""),
-      mc: String(pick(r, "Material Code") ?? ""),
+      // The live sheet names this column "Matcode"; older exports used "Material Code". Accept either.
+      mc: String(pick(r, "Matcode") ?? pick(r, "Material Code") ?? ""),
       pc: String(pick(r, "Product Cat") ?? "").trim(),
       psc: String(pick(r, "Product Sub Cat") ?? "").trim(),
       shop: String(pick(r, "Delivery Shop Name") ?? ""),
@@ -300,7 +357,8 @@ function cleanRows(rawRows) {
       nr: String(pick(r, "New Package RC") ?? "").trim(),
       cu: String(pick(r, "Current Package RC") ?? "").trim(),
       tdc: bucketTDC(pick(r, "Total day to customer")),
-    });
+      prop: String(pick(r, "New Proposition Name") ?? "").trim(),
+    }));
   }
   return out;
 }
@@ -460,6 +518,7 @@ function brandMeta(name) {
 function matchesProductQ(r, qLower) {
   if (!qLower) return true;
   return (r.pn || "").toLowerCase().includes(qLower)
+    || (r.pn0 || "").toLowerCase().includes(qLower)
     || (r.pfn || "").toLowerCase().includes(qLower)
     || (r.mc || "").toLowerCase().includes(qLower);
 }
@@ -781,6 +840,54 @@ function Stat({ label, value, color }) {
     <div style={{ textAlign: "center" }}>
       <div style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 800, color }}>{value}</div>
+    </div>
+  );
+}
+
+/* ============================ Split stacked bar (eSIM/Physical, Prepaid groups) ============================
+   Same look as the Order Total widget: one horizontal stacked bar, segments =
+   cats (in order), values follow the selected metric. field = row property
+   holding the category id (r.sim or r.pg). */
+function W_SplitStack({ rows, metric, cats, field }) {
+  const data = useMemo(() => {
+    const val = (r) => metric === "orders" ? 1 : metric === "units" ? r.q : r.p;
+    const o = { label: "Total" };
+    cats.forEach((c) => { o[c.id] = 0; });
+    rows.forEach((r) => { const k = r[field]; if (o[k] !== undefined) o[k] += val(r); });
+    return [o];
+  }, [rows, metric, cats, field]);
+  const total = cats.reduce((s, c) => s + data[0][c.id], 0);
+  const nonZero = cats.filter((c) => data[0][c.id] > 0).map((c) => c.id);
+  const first = nonZero[0], last = nonZero[nonZero.length - 1];
+  const labelOf = (id) => (cats.find((c) => c.id === id) || {}).label || id;
+  const colorOf = (id) => (cats.find((c) => c.id === id) || {}).color || C.ink;
+  const pct = (v) => total ? ((v / total) * 100).toFixed(1) + "%" : "0%";
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={200}>
+        <BarChart data={data} layout="vertical" margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke={C.line} horizontal={false} />
+          <XAxis type="number" tick={{ fontSize: 11, fill: C.sub }} axisLine={false} tickLine={false} tickFormatter={(v) => v >= 1000 ? (v/1000) + "k" : v} />
+          <YAxis type="category" dataKey="label" hide />
+          <Tooltip content={gradTip} contentStyle={TIP_STYLE} cursor={{ fill: "rgba(99,102,241,0.05)" }}
+            formatter={(v, n) => [`${METRICS[metric].fmt(v)} (${pct(v)})`, labelOf(n)]} />
+          <Legend formatter={(v) => <span style={{ color: colorOf(v), fontWeight: 600 }}>{labelOf(v)}</span>} iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+          {cats.map((c) => (
+            <Bar key={c.id} dataKey={c.id} stackId="s" fill={gfill(c.color, "h")} name={c.id} barSize={64}
+              radius={[c.id === first ? 8 : 0, c.id === last ? 8 : 0, c.id === last ? 8 : 0, c.id === first ? 8 : 0]} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+      <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "8px 28px", marginTop: 4 }}>
+        <Stat label="Total" value={METRICS[metric].fmt(total)} color={C.ink} />
+        {cats.map((c) => (
+          <div key={c.id} style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}>{c.label}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: c.color }}>{METRICS[metric].fmt(data[0][c.id])}</div>
+            <div style={{ fontSize: 11, color: C.sub }}>{pct(data[0][c.id])}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1616,12 +1723,14 @@ function Dashboard() {
   const [topOpen, setTopOpen] = useState(true); // frozen header/upload/controls/tabs — collapsible on both desktop & mobile
   const [delivery, setDelivery] = useState("normal"); // normal | pickup | all
   const [op, setOp] = useState("all"); // all | TRUE | DTAC
+  const [simType, setSimType] = useState("all"); // all | esim | physical — Postpaid & Prepaid tabs only
+  const [pgroup, setPgroup] = useState("all");   // all | travel | tourist | other — Prepaid tab only
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [tdcZones, setTdcZones] = useState(new Set(["BKK+Greater Zone", "Upcountry zone"]));
 
   // Data source: auto-fetched from the private Apps Script proxy on load
-  const [rows, setRows] = useState(RAW);
+  const [rows, setRows] = useState(RAW_ROWS);
   const [source, setSource] = useState({ kind: "default", name: "VC Ecommerce report (built-in)", count: RAW.length });
   const [loadErr, setLoadErr] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1643,7 +1752,7 @@ function Dashboard() {
 
   // Apps Script Web App — reads the sheet's cells directly (no file-size limit) and returns CSV.
   // Sheet can stay restricted; this proxy runs as the deploying account.
-  const SHEET_CSV_URL = `https://script.google.com/macros/s/AKfycbwvGxqcYyi6pWlt6-KjHVu445vCOhmpK0lQDNt-WduBjjIXmFTH61TZU84YHmOBw1K8/exec?_=${Date.now()}`;
+  const SHEET_CSV_URL = `https://script.google.com/macros/s/AKfycbxf9tbFRO6xjO9WOhTKlDDn5mFm2rUEd2s4Hzt7mr3EEalAdb2NQed5dyNQVvAal957/exec?_=${Date.now()}`;
 
   // Auto-load latest data from the Google Sheet when the dashboard opens
   React.useEffect(() => {
@@ -1724,7 +1833,7 @@ function Dashboard() {
     }
   }
   function resetToDefault() {
-    setRows(RAW);
+    setRows(RAW_ROWS);
     setSource({ kind: "default", name: "VC Ecommerce report (built-in)", count: RAW.length });
     setLoadErr(""); setTab("all");
   }
@@ -1741,6 +1850,14 @@ function Dashboard() {
     }
   }
 
+  // Tab-level sub-filters: SIM type on Postpaid/Prepaid, prepaid group on Prepaid.
+  // Ignored on every other tab, so their saved value never hides rows elsewhere.
+  const passSub = (r) => {
+    if (isSimTabId(tab) && simType !== "all" && r.sim !== simType) return false;
+    if (tab === "prepaid" && pgroup !== "all" && r.pg !== pgroup) return false;
+    return true;
+  };
+
   const filtered = useMemo(() => {
     const tabDef = TABS.find((t) => t.id === tab);
     const fromD = from ? new Date(from + "T00:00") : null;
@@ -1748,6 +1865,7 @@ function Dashboard() {
     const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
+      if (!passSub(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       // dataset
       if (dataset === "success") {
@@ -1768,7 +1886,7 @@ function Dashboard() {
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, dataset, result, gbrand, productQ, delivery, from, to]);
+  }, [rows, tab, op, dataset, result, gbrand, productQ, delivery, from, to, simType, pgroup]);
 
   // Pickup-shop widget: shop names only exist on pickup orders, so this view always
   // uses pickup rows regardless of the global Delivery toggle (otherwise it's empty
@@ -1780,6 +1898,7 @@ function Dashboard() {
     const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
+      if (!passSub(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       if (dataset === "success") {
         if (r.ps === "Pending" || r.ps === "-") return false;
@@ -1793,7 +1912,7 @@ function Dashboard() {
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, dataset, result, gbrand, productQ, from, to]);
+  }, [rows, tab, op, dataset, result, gbrand, productQ, from, to, simType, pgroup]);
 
   // Items 5 & 6 — "Payment not process": orders cancelled AND payment still pending.
   // Applies tab / operator / date filters; ignores dataset & delivery toggles by design.
@@ -1804,6 +1923,7 @@ function Dashboard() {
     const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
+      if (!passSub(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
       if (!matchesProductQ(r, qLower)) return false;
@@ -1813,7 +1933,7 @@ function Dashboard() {
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, gbrand, productQ, from, to]);
+  }, [rows, tab, op, gbrand, productQ, from, to, simType, pgroup]);
 
   // Shared base population (tab / operator / date filters only) used as denominators
   // and numerators for the cancellation widgets.
@@ -1824,6 +1944,7 @@ function Dashboard() {
     const qLower = productQ.trim().toLowerCase();
     return rows.filter((r) => {
       if (!tabDef.test(r)) return false;
+      if (!passSub(r)) return false;
       if (op !== "all" && r.op !== op) return false;
       if (gbrand !== "all" && brandKey(r.br) !== gbrand) return false;
       if (!matchesProductQ(r, qLower)) return false;
@@ -1831,7 +1952,7 @@ function Dashboard() {
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
       return true;
     });
-  }, [rows, tab, op, gbrand, productQ, from, to]);
+  }, [rows, tab, op, gbrand, productQ, from, to, simType, pgroup]);
   // Widget 2/3 numerator: cancelled AND paid
   const paidCancelledRows = useMemo(() => baseRows.filter((r) => r.os === "Cancelled" && r.ps === "Paid"), [baseRows]);
   // Widget 2 denominator: all paid orders
@@ -1862,6 +1983,8 @@ function Dashboard() {
   const datasetLabel = dataset === "success" ? "Successful payment" : "Total transactions";
   const resultLabel = result === "successful" ? "Successful orders only" : "All orders";
   const deliveryLabel = delivery === "normal" ? "Normal delivery" : delivery === "pickup" ? "Pickup / no delivery" : "All delivery types";
+  const simLabel = isSimTabId(tab) && simType !== "all" ? (SIM_TYPES.find((x) => x.id === simType) || {}).label : null;
+  const pgroupLabel = tab === "prepaid" && pgroup !== "all" ? (PREPAID_GROUPS.find((x) => x.id === pgroup) || {}).label : null;
   const brandLabel = gbrand !== "all" ? ((brandList.find((b) => b.key === gbrand) || {}).label || gbrand) : null;
 
   // Where the order dates came from, recomputed whenever the dataset changes.
@@ -1919,7 +2042,7 @@ function Dashboard() {
         {!topOpen && (
           <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.7, marginBottom: 10 }}>
             <div>Data between <strong style={{ color: C.ink }}>{fromLabel}</strong> and <strong style={{ color: C.ink }}>{toLabel}</strong> · Measuring by <strong style={{ color: C.ink }}>{metricLabel}</strong></div>
-            <div>{datasetLabel} · {resultLabel} · {deliveryLabel}{brandLabel ? ` · Brand: ${brandLabel}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}{tab !== "all" ? ` · Tab: ${TABS.find(t=>t.id===tab).label}` : ""}</div>
+            <div>{datasetLabel} · {resultLabel} · {deliveryLabel}{brandLabel ? ` · Brand: ${brandLabel}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}{tab !== "all" ? ` · Tab: ${TABS.find(t=>t.id===tab).label}` : ""}{simLabel ? ` · ${simLabel}` : ""}{pgroupLabel ? ` · ${pgroupLabel}` : ""}</div>
           </div>
         )}
 
@@ -2070,6 +2193,25 @@ function Dashboard() {
             }}>{t.label}</button>
           ))}
         </div>
+
+        {/* Tab sub-filters — SIM type (Postpaid & Prepaid) + prepaid group (Prepaid only) */}
+        {isSimTabId(tab) && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", padding: "10px 2px 2px" }}>
+            <ControlGroup label="SIM Type">
+              <Pill active={simType === "all"} onClick={() => setSimType("all")}>All SIM types</Pill>
+              {SIM_TYPES.map((x) => <Pill key={x.id} active={simType === x.id} onClick={() => setSimType(x.id)}>{x.label}</Pill>)}
+            </ControlGroup>
+            {tab === "prepaid" && (
+              <>
+                <Divider />
+                <ControlGroup label="Prepaid Group">
+                  <Pill active={pgroup === "all"} onClick={() => setPgroup("all")}>All prepaid</Pill>
+                  {PREPAID_GROUPS.map((x) => <Pill key={x.id} active={pgroup === x.id} onClick={() => setPgroup(x.id)}>{x.label}</Pill>)}
+                </ControlGroup>
+              </>
+            )}
+          </div>
+        )}
         </>
         )}
         </div>
@@ -2088,6 +2230,20 @@ function Dashboard() {
             <W1OrderTotal rows={filtered} metric={metric} />
           </Card>
         </div>
+
+        {/* Row 1b — eSIM vs Physical SIM (Postpaid & Prepaid) + prepaid groups (Prepaid only, right side) */}
+        {isSimTabId(tab) && (
+          <div className={tab === "prepaid" ? "grid-2col-mixed" : undefined} style={{ display: "grid", gridTemplateColumns: tab === "prepaid" ? "minmax(0,1fr) minmax(0,1fr)" : "1fr", gap: 16, marginBottom: 16, alignItems: "start" }}>
+            <Card title={`eSIM vs Physical SIM · ${METRICS[metric].label}`}>
+              <W_SplitStack rows={filtered} metric={metric} cats={SIM_TYPES} field="sim" />
+            </Card>
+            {tab === "prepaid" && (
+              <Card title={`Travel / Tourist / Other Prepaid SIM · ${METRICS[metric].label}`}>
+                <W_SplitStack rows={filtered} metric={metric} cats={PREPAID_GROUPS} field="pg" />
+              </Card>
+            )}
+          </div>
+        )}
 
         {/* Row 2 */}
         <div className="grid-autocards" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16, marginBottom: 16 }}>
@@ -2143,7 +2299,7 @@ function Dashboard() {
         </div>
 
         <div style={{ textAlign: "center", color: C.sub, fontSize: 11, padding: "8px 0 24px" }}>
-          Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"} · {result === "successful" ? "Successful orders only" : "All order results"}{gbrand !== "all" ? ` · Brand: ${(brandList.find(b=>b.key===gbrand)||{}).label || gbrand}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}
+          Showing {fmt(filtered.length)} orders · {tab === "all" ? "All data" : TABS.find(t=>t.id===tab).label} tab · {dataset === "success" ? "Successful payments only" : "All transactions"} · {result === "successful" ? "Successful orders only" : "All order results"}{gbrand !== "all" ? ` · Brand: ${(brandList.find(b=>b.key===gbrand)||{}).label || gbrand}` : ""}{productQ.trim() ? ` · Product: "${productQ.trim()}"` : ""}{simLabel ? ` · ${simLabel}` : ""}{pgroupLabel ? ` · ${pgroupLabel}` : ""}
           <div style={{ marginTop: 4, color: dateFmtNote.warn ? C.red : C.sub }}>
             Order dates: {dateFmtNote.text}
           </div>
